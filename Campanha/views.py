@@ -345,6 +345,19 @@ def sair_campanha(request, pk):
 @api_view(["DELETE"])
 @permission_classes([IsAuthenticated])
 def remover_personagem(request, pk, personagem_pk):
+    """
+    Remove (desvincula) um Personagem desta Campanha.
+
+    FIX (permissão): antes só o DONO do personagem conseguia se remover
+    (o `.get(pk=personagem_pk, usuario=request.user)` original excluía
+    silenciosamente qualquer personagem que não fosse do usuário logado,
+    devolvendo 404 mesmo quando o personagem existia). Isso impedia o
+    mestre de remover o personagem de outro jogador da própria campanha.
+
+    Regra atual: o MESTRE (ou superuser) pode remover o personagem de
+    QUALQUER jogador; um jogador comum só pode remover os PRÓPRIOS
+    personagens — igual ao comportamento anterior para não-mestres.
+    """
 
     try:
         campanha = Campanha.objects.get(pk=pk)
@@ -355,22 +368,27 @@ def remover_personagem(request, pk, personagem_pk):
             status=status.HTTP_404_NOT_FOUND
         )
 
-    if not campanha.jogadores.filter(pk=request.user.pk).exists():
+    e_mestre = pode_criar_ou_excluir(request, campanha)
+
+    if not e_mestre and not campanha.jogadores.filter(pk=request.user.pk).exists():
         return Response(
             {"erro": "Você não participa desta campanha."},
             status=status.HTTP_403_FORBIDDEN
         )
 
     try:
-        personagem = Personagem.objects.get(
-            pk=personagem_pk,
-            usuario=request.user
-        )
+        personagem = Personagem.objects.get(pk=personagem_pk)
 
     except Personagem.DoesNotExist:
         return Response(
             {"erro": "Personagem não encontrado."},
             status=status.HTTP_404_NOT_FOUND
+        )
+
+    if not e_mestre and personagem.usuario_id != request.user.id:
+        return Response(
+            {"erro": "Você só pode remover os seus próprios personagens."},
+            status=status.HTTP_403_FORBIDDEN
         )
 
     if not campanha.personagens.filter(pk=personagem.pk).exists():
@@ -385,6 +403,77 @@ def remover_personagem(request, pk, personagem_pk):
         {"mensagem": "Personagem removido da campanha com sucesso."},
         status=status.HTTP_200_OK
     )
+
+
+@extend_schema(
+    methods=["DELETE"],
+    operation_id="remover_jogador_campanha",
+    responses=None,
+)
+@api_view(["DELETE"])
+@permission_classes([IsAuthenticated])
+def remover_jogador(request, pk, usuario_pk):
+    """
+    NOVO endpoint: o mestre remove (expulsa) um jogador da campanha —
+    antes só existia a autorremoção (`sair_campanha`). Só o mestre (ou
+    superuser) pode chamar isso, via `_exige_mestre`.
+
+    Os personagens deste jogador vinculados a esta campanha também são
+    desvinculados (mesmo comportamento já usado em `sair_campanha`), para
+    não deixar personagens "órfãos" de um jogador que não está mais na
+    mesa.
+    """
+
+    try:
+        campanha = Campanha.objects.get(pk=pk)
+
+    except Campanha.DoesNotExist:
+        return Response(
+            {"erro": "Campanha não encontrada."},
+            status=status.HTTP_404_NOT_FOUND
+        )
+
+    erro = _exige_mestre(request, campanha)
+
+    if erro:
+        return erro
+
+    try:
+        usuario_pk_int = int(usuario_pk)
+    except (TypeError, ValueError):
+        return Response(
+            {"erro": "Usuário inválido."},
+            status=status.HTTP_400_BAD_REQUEST
+        )
+
+    if usuario_pk_int == campanha.mestre_id:
+        return Response(
+            {
+                "erro": (
+                    "O mestre não pode remover a si mesmo. "
+                    "Exclua a campanha ou transfira a mestria."
+                )
+            },
+            status=status.HTTP_400_BAD_REQUEST
+        )
+
+    if not campanha.jogadores.filter(pk=usuario_pk_int).exists():
+        return Response(
+            {"erro": "Este usuário não participa desta campanha."},
+            status=status.HTTP_400_BAD_REQUEST
+        )
+
+    campanha.personagens.remove(
+        *campanha.personagens.filter(usuario_id=usuario_pk_int)
+    )
+
+    campanha.jogadores.remove(usuario_pk_int)
+
+    return Response(
+        {"mensagem": "Jogador removido da campanha com sucesso."},
+        status=status.HTTP_200_OK
+    )
+
 
 @extend_schema(
     methods=["GET"],
@@ -483,6 +572,7 @@ def _exige_mestre(request, campanha):
     """
     Retorna uma Response de erro se o usuário não puder criar/excluir
     recursos "de mundo" desta campanha (só mestre ou superuser podem).
+    Reaproveitado também por `remover_jogador` acima.
     """
     if not pode_criar_ou_excluir(request, campanha):
         return Response(

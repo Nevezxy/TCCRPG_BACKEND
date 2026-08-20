@@ -23,6 +23,37 @@ def _get_campanha(obj):
     return None
 
 
+def _pode_acessar_personagem(personagem, user, is_safe):
+    """
+    Regra única de acesso a um Personagem que NÃO é do usuário logado —
+    usada tanto para o próprio Personagem quanto para qualquer recurso
+    filho dele (Status, Atributo, Defesa, Item, Arma, Armadura, Técnica,
+    Poder, Habilidade, Bônus...). Ponto único de manutenção: mudar a regra
+    aqui já vale para toda a ficha, em qualquer endpoint.
+
+      - Mestre de QUALQUER campanha à qual este personagem esteja
+        vinculado: leitura E edição plena (é o que permite ao mestre gerir
+        a ficha de qualquer jogador da própria mesa).
+      - Jogador (não mestre) de uma campanha em comum: só leitura — é o
+        que já alimentava o Escudo do Mestre/visão entre jogadores.
+
+    Não decide sozinho sobre EXCLUIR o próprio Personagem (a ficha
+    inteira) — isso é tratado à parte por quem chama esta função, porque
+    apagar a ficha toda de outra pessoa continua exclusivo do dono, mesmo
+    para o mestre.
+    """
+    if not hasattr(personagem, "campanhas"):
+        return False
+
+    if personagem.campanhas.filter(mestre=user).exists():
+        return True
+
+    if is_safe:
+        return personagem.campanhas.filter(jogadores=user).exists()
+
+    return False
+
+
 def usuario_pode_ver_objeto(user, obj):
     """
     Mesma regra de visibilidade usada no ramo "leitura" de
@@ -128,29 +159,40 @@ class IsOwnerOrAdmin(BasePermission):
                 return True
 
             # Leitura: qualquer participante de uma campanha vinculada a
-            # este personagem (mestre OU jogador) pode CONSULTAR (nunca
-            # editar) — é o que permite o "Escudo do Mestre" mostrar
-            # Status/Atributos/Defesas de personagens de outros jogadores
-            # para todo mundo na mesa, não só para quem mestra. `campanhas`
-            # é o related_name reverso de Campanha.personagens (ManyToMany).
-            if is_safe and hasattr(obj, "campanhas"):
-                return obj.campanhas.filter(
-                    Q(mestre=request.user) | Q(jogadores=request.user)
-                ).exists()
+            # este personagem (mestre OU jogador) pode CONSULTAR — é o que
+            # permite o "Escudo do Mestre" mostrar Status/Atributos/
+            # Defesas de personagens de outros jogadores para todo mundo
+            # na mesa, não só para quem mestra.
+            #
+            # Escrita (PUT/PATCH): só o MESTRE de uma campanha vinculada
+            # pode editar a ficha de outro jogador — é o que permite ao
+            # mestre gerenciar (ex.: ajustar Status/Itens durante a
+            # sessão) a ficha de qualquer personagem de sua mesa.
+            #
+            # Excluir a ficha INTEIRA de outra pessoa continua exclusivo
+            # do dono, mesmo para o mestre — por isso DELETE nunca passa
+            # por aqui, mesmo quando `_pode_acessar_personagem` retorna
+            # True (ela só sabe dizer "pode ver/editar", não "pode
+            # apagar").
+            if hasattr(obj, "campanhas") and _pode_acessar_personagem(obj, request.user, is_safe):
+                return request.method != "DELETE"
 
             return False
 
         # --- Recursos "filhos" do personagem (Status, Atributo, Defesa,
-        # Bonus, etc.) ---
+        # Item, Arma, Armadura, Técnica, Poder, Habilidade, Bonus, etc.) ---
         if hasattr(obj, "personagem"):
 
             if obj.personagem.usuario == request.user:
                 return True
 
-            if is_safe and hasattr(obj.personagem, "campanhas"):
-                return obj.personagem.campanhas.filter(
-                    Q(mestre=request.user) | Q(jogadores=request.user)
-                ).exists()
+            # Aqui não existe "excluir o personagem inteiro" — excluir um
+            # Item/Status/Bônus é uma operação normal de EDITAR a ficha,
+            # então o mestre tem CRUD completo (GET/POST/PUT/PATCH/DELETE)
+            # nesses sub-recursos, igual ao dono. Jogador (não mestre)
+            # continua só com leitura, via `is_safe` dentro do helper.
+            if hasattr(obj.personagem, "campanhas"):
+                return _pode_acessar_personagem(obj.personagem, request.user, is_safe)
 
             return False
 
@@ -164,6 +206,10 @@ def pode_criar_ou_excluir(request, campanha):
     ainda não existe uma instância do objeto para checar
     has_object_permission. Regra: só mestre (ou superuser) pode criar ou
     excluir esses recursos.
+
+    Também reaproveitado por `Campanha/views.py` para decidir se quem está
+    removendo um personagem/jogador da campanha é o mestre (com poder de
+    remover qualquer um) ou um jogador comum (só a si mesmo).
     """
     if request.user.is_superuser:
         return True

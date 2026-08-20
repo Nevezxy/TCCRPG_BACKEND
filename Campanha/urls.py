@@ -55,6 +55,16 @@ urlpatterns = [
     ),
 
 
+    # Jogadores — NOVO: só o mestre pode expulsar alguém da campanha; a
+    # autorremoção (o próprio jogador saindo) continua sendo
+    # `sair_campanha` (POST /campanha/<pk>/sair/), sem mudanças.
+    path(
+        "<int:pk>/jogadores/<int:usuario_pk>/",
+        views.remover_jogador,
+        name="remover_jogador"
+    ),
+
+
     # NPCs — lista aninhada em Campanha, detalhe "achatado" (só o id do
     # NPC), no mesmo padrão usado pelos recursos filhos de Personagem
     # (ver createChildResource no frontend). A campanha do NPC é sempre
