@@ -82,17 +82,14 @@ urlpatterns = [
         name="npc_detalhe"
     ),
 
-    # Relações de NPC — lista aninhada no NPC, detalhe achatado
+    # Relações de NPC — substituídas pelo modelo genérico Conexao (ver
+    # seções 6-10 da refatoração). `npc_conexoes` lista as conexões deste
+    # NPC especificamente; CRUD completo de conexões fica nos endpoints
+    # genéricos `conexao_lista`/`conexao_detalhe` mais abaixo.
     path(
-        "npcs/<int:npc_pk>/relacoes/",
-        views.relacao_npc_lista,
-        name="relacao_npc_lista"
-    ),
-
-    path(
-        "relacoes-npc/<int:relacao_pk>/",
-        views.relacao_npc_detalhe,
-        name="relacao_npc_detalhe"
+        "npcs/<int:npc_pk>/conexoes/",
+        views.npc_conexoes,
+        name="npc_conexoes"
     ),
 
 
@@ -109,6 +106,12 @@ urlpatterns = [
         name="local_detalhe"
     ),
 
+    path(
+        "locais/<int:local_pk>/conexoes/",
+        views.local_conexoes,
+        name="local_conexoes"
+    ),
+
 
     # Organizações
     path(
@@ -123,17 +126,12 @@ urlpatterns = [
         name="organizacao_detalhe"
     ),
 
-    # Membros de organização — lista aninhada na Organizacao, detalhe achatado
+    # Membros de organização — substituído pelo modelo genérico Conexao
+    # (tipo "Membro de"/"Possui membro"; ver seções 6-10 da refatoração).
     path(
-        "organizacoes/<int:organizacao_pk>/membros/",
-        views.membro_organizacao_lista,
-        name="membro_organizacao_lista"
-    ),
-
-    path(
-        "membros-organizacao/<int:membro_pk>/",
-        views.membro_organizacao_detalhe,
-        name="membro_organizacao_detalhe"
+        "organizacoes/<int:organizacao_pk>/conexoes/",
+        views.organizacao_conexoes,
+        name="organizacao_conexoes"
     ),
 
 
@@ -150,6 +148,12 @@ urlpatterns = [
         name="mapa_detalhe"
     ),
 
+    path(
+        "mapas/<int:mapa_pk>/conexoes/",
+        views.mapa_conexoes,
+        name="mapa_conexoes"
+    ),
+
 
     # Sessões
     path(
@@ -162,6 +166,12 @@ urlpatterns = [
         "sessoes/<int:sessao_pk>/",
         views.sessao_detalhe,
         name="sessao_detalhe"
+    ),
+
+    path(
+        "sessoes/<int:sessao_pk>/conexoes/",
+        views.sessao_conexoes,
+        name="sessao_conexoes"
     ),
 
 
@@ -178,6 +188,12 @@ urlpatterns = [
         name="missao_detalhe"
     ),
 
+    path(
+        "missoes/<int:missao_pk>/conexoes/",
+        views.missao_conexoes,
+        name="missao_conexoes"
+    ),
+
 
     # Eventos
     path(
@@ -190,6 +206,62 @@ urlpatterns = [
         "eventos/<int:evento_pk>/",
         views.evento_detalhe,
         name="evento_detalhe"
+    ),
+
+    path(
+        "eventos/<int:evento_pk>/conexoes/",
+        views.evento_conexoes,
+        name="evento_conexoes"
+    ),
+
+
+    # Pastas — árvore de organização estilo Obsidian (seção 3)
+    path(
+        "<int:pk>/pastas/",
+        views.pasta_lista,
+        name="pasta_lista"
+    ),
+
+    path(
+        "pastas/<int:pasta_pk>/",
+        views.pasta_detalhe,
+        name="pasta_detalhe"
+    ),
+
+    path(
+        "pastas/<int:pasta_pk>/mover/",
+        views.pasta_mover,
+        name="pasta_mover"
+    ),
+
+
+    # Tipos de conexão — vocabulário compartilhado (não aninhado em
+    # campanha; ver TipoConexao em models.py)
+    path(
+        "tipos-conexao/",
+        views.tipo_conexao_lista,
+        name="tipo_conexao_lista"
+    ),
+
+    path(
+        "tipos-conexao/<int:tipo_pk>/",
+        views.tipo_conexao_detalhe,
+        name="tipo_conexao_detalhe"
+    ),
+
+
+    # Conexões — relacionamento genérico entre entidades de uma campanha
+    # (seções 6-10; substitui RelacaoNPC e MembroOrganizacao)
+    path(
+        "<int:pk>/conexoes/",
+        views.conexao_lista,
+        name="conexao_lista"
+    ),
+
+    path(
+        "conexoes/<int:conexao_pk>/",
+        views.conexao_detalhe,
+        name="conexao_detalhe"
     ),
 
 

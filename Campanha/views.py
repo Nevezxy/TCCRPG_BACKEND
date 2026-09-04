@@ -13,30 +13,33 @@ from django.db.models import Q
 from .models import (
     Campanha,
     NPC,
-    RelacaoNPC,
     Local,
     Organizacao,
-    MembroOrganizacao,
     Mapa,
     Sessao,
     Missao,
     Evento,
     Nota,
+    Pasta,
+    TipoConexao,
+    Conexao,
 )
 from Usuario.permissions import check_object_permission, pode_criar_ou_excluir, usuario_pode_ver_objeto
 from .serializers import (
     CampanhaSerializer,
     NPCSerializer,
-    RelacaoNPCSerializer,
     LocalSerializer,
     OrganizacaoSerializer,
-    MembroOrganizacaoSerializer,
     MapaSerializer,
     SessaoSerializer,
     MissaoSerializer,
     EventoSerializer,
     NotaSerializer,
+    PastaSerializer,
+    TipoConexaoSerializer,
+    ConexaoSerializer,
     campanhas_do_objeto_notavel,
+    conexoes_de_entidade,
 )
 
 
@@ -642,10 +645,7 @@ def npc_lista(request, pk):
         npcs = _filtra_visiveis(
             request, campanha,
             campanha.npcs.all()
-            .prefetch_related(
-                "organizacoes_lideradas", "membroorganizacao_set__organizacao",
-                "relacoes_com_outros_npcs__npc"
-            )
+            .prefetch_related("organizacoes_lideradas")
             .order_by("nome")
         )
 
@@ -708,10 +708,7 @@ def npc_detalhe(request, npc_pk):
     try:
         npc = (
             NPC.objects.select_related("campanha")
-            .prefetch_related(
-                "organizacoes_lideradas", "membroorganizacao_set__organizacao",
-                "relacoes_com_outros_npcs__npc"
-            )
+            .prefetch_related("organizacoes_lideradas")
             .get(pk=npc_pk)
         )
 
@@ -767,143 +764,39 @@ def npc_detalhe(request, npc_pk):
 
 
 # ---------------------------------------------------------------------------
-# RelacaoNPC (aninhado em NPC)
+# Conexões de uma entidade específica (seção 11: "GET /.../npcs/12/conexoes/"
+# ou equivalente). Fina camada em cima de `conexoes_de_entidade`
+# (serializers.py), reaproveitada por um endpoint por tipo de entidade
+# abaixo, no mesmo padrão de duplicação já usado pelo resto do arquivo
+# (list/detalhe por model) em vez de uma view genérica parametrizada.
 # ---------------------------------------------------------------------------
 
-@extend_schema(
-    methods=["GET"],
-    operation_id="listar_relacoes_npc",
-    responses=RelacaoNPCSerializer(many=True),
-)
-@extend_schema(
-    methods=["POST"],
-    operation_id="criar_relacao_npc",
-    request=RelacaoNPCSerializer,
-    responses=RelacaoNPCSerializer,
-)
-@api_view(["GET", "POST"])
-@permission_classes([IsAuthenticated])
-def relacao_npc_lista(request, npc_pk):
+def _conexoes_da_entidade_view(request, modelo, pk, select_related=None):
+    qs = modelo.objects.select_related(*(select_related or ["campanha"]))
 
     try:
-        npc = NPC.objects.select_related("campanha").get(pk=npc_pk)
+        entidade = qs.get(pk=pk)
 
-    except NPC.DoesNotExist:
+    except modelo.DoesNotExist:
         return Response(
-            {"erro": "NPC não encontrado."},
+            {"erro": f"{modelo.__name__} não encontrado."},
             status=status.HTTP_404_NOT_FOUND
         )
 
-    check_object_permission(request, npc)
+    check_object_permission(request, entidade)
 
-    if request.method == "GET":
-
-        relacoes = npc.relacoes.all().order_by("id")
-
-        return Response(RelacaoNPCSerializer(relacoes, many=True).data)
-
-    elif request.method == "POST":
-
-        erro = _exige_mestre(request, npc.campanha)
-
-        if erro:
-            return erro
-
-        serializer = RelacaoNPCSerializer(
-            data=request.data, context={"npc": npc}
-        )
-
-        if serializer.is_valid():
-            relacao = serializer.save(npc=npc)
-
-            return Response(
-                RelacaoNPCSerializer(relacao).data,
-                status=status.HTTP_201_CREATED
-            )
-
-        return Response(serializer.errors, status=status.HTTP_400_BAD_REQUEST)
+    return Response(conexoes_de_entidade(entidade))
 
 
 @extend_schema(
     methods=["GET"],
-    operation_id="detalhar_relacao_npc",
-    responses=RelacaoNPCSerializer,
+    operation_id="listar_conexoes_npc",
+    responses={200: {"type": "array", "items": {"type": "object"}}},
 )
-@extend_schema(
-    methods=["PUT"],
-    operation_id="atualizar_relacao_npc",
-    request=RelacaoNPCSerializer,
-    responses=RelacaoNPCSerializer,
-)
-@extend_schema(
-    methods=["PATCH"],
-    operation_id="atualizar_parcial_relacao_npc",
-    request=RelacaoNPCSerializer,
-    responses=RelacaoNPCSerializer,
-)
-@extend_schema(
-    methods=["DELETE"],
-    operation_id="remover_relacao_npc",
-    responses=None,
-)
-@api_view(["GET", "PUT", "PATCH", "DELETE"])
+@api_view(["GET"])
 @permission_classes([IsAuthenticated])
-def relacao_npc_detalhe(request, relacao_pk):
-
-    try:
-        relacao = RelacaoNPC.objects.select_related("npc__campanha").get(
-            pk=relacao_pk
-        )
-
-    except RelacaoNPC.DoesNotExist:
-        return Response(
-            {"erro": "Relação não encontrada."},
-            status=status.HTTP_404_NOT_FOUND
-        )
-
-    check_object_permission(request, relacao)
-
-    if request.method == "GET":
-
-        return Response(RelacaoNPCSerializer(relacao).data)
-
-    elif request.method == "PUT":
-
-        serializer = RelacaoNPCSerializer(
-            relacao, data=request.data, context={"npc": relacao.npc}
-        )
-
-        if serializer.is_valid():
-            serializer.save()
-            return Response(serializer.data)
-
-        return Response(serializer.errors, status=status.HTTP_400_BAD_REQUEST)
-
-    elif request.method == "PATCH":
-
-        serializer = RelacaoNPCSerializer(
-            relacao, data=request.data, partial=True, context={"npc": relacao.npc}
-        )
-
-        if serializer.is_valid():
-            serializer.save()
-            return Response(serializer.data)
-
-        return Response(serializer.errors, status=status.HTTP_400_BAD_REQUEST)
-
-    elif request.method == "DELETE":
-
-        erro = _exige_mestre(request, relacao.npc.campanha)
-
-        if erro:
-            return erro
-
-        relacao.delete()
-
-        return Response(
-            {"mensagem": "Relação removida com sucesso."},
-            status=status.HTTP_204_NO_CONTENT
-        )
+def npc_conexoes(request, npc_pk):
+    return _conexoes_da_entidade_view(request, NPC, npc_pk, select_related=["campanha"])
 
 
 # ---------------------------------------------------------------------------
@@ -1179,96 +1072,29 @@ def organizacao_detalhe(request, organizacao_pk):
 
 
 # ---------------------------------------------------------------------------
-# MembroOrganizacao (aninhado em Organizacao)
+# Conexões de Local / Organizacao (mesmo padrão de `npc_conexoes` acima)
 # ---------------------------------------------------------------------------
 
 @extend_schema(
     methods=["GET"],
-    operation_id="listar_membros_organizacao",
-    responses=MembroOrganizacaoSerializer(many=True),
+    operation_id="listar_conexoes_local",
+    responses={200: {"type": "array", "items": {"type": "object"}}},
 )
-@extend_schema(
-    methods=["POST"],
-    operation_id="criar_membro_organizacao",
-    request=MembroOrganizacaoSerializer,
-    responses=MembroOrganizacaoSerializer,
-)
-@api_view(["GET", "POST"])
+@api_view(["GET"])
 @permission_classes([IsAuthenticated])
-def membro_organizacao_lista(request, organizacao_pk):
-
-    try:
-        organizacao = Organizacao.objects.select_related("campanha").get(
-            pk=organizacao_pk
-        )
-
-    except Organizacao.DoesNotExist:
-        return Response(
-            {"erro": "Organização não encontrada."},
-            status=status.HTTP_404_NOT_FOUND
-        )
-
-    check_object_permission(request, organizacao)
-
-    if request.method == "GET":
-
-        membros = organizacao.membros.all().order_by("id")
-
-        return Response(MembroOrganizacaoSerializer(membros, many=True).data)
-
-    elif request.method == "POST":
-
-        erro = _exige_mestre(request, organizacao.campanha)
-
-        if erro:
-            return erro
-
-        serializer = MembroOrganizacaoSerializer(
-            data=request.data, context={"organizacao": organizacao}
-        )
-
-        if serializer.is_valid():
-            membro = serializer.save(organizacao=organizacao)
-
-            return Response(
-                MembroOrganizacaoSerializer(membro).data,
-                status=status.HTTP_201_CREATED
-            )
-
-        return Response(serializer.errors, status=status.HTTP_400_BAD_REQUEST)
+def local_conexoes(request, local_pk):
+    return _conexoes_da_entidade_view(request, Local, local_pk, select_related=["campanha"])
 
 
 @extend_schema(
-    methods=["DELETE"],
-    operation_id="remover_membro_organizacao",
-    responses=None,
+    methods=["GET"],
+    operation_id="listar_conexoes_organizacao",
+    responses={200: {"type": "array", "items": {"type": "object"}}},
 )
-@api_view(["DELETE"])
+@api_view(["GET"])
 @permission_classes([IsAuthenticated])
-def membro_organizacao_detalhe(request, membro_pk):
-
-    try:
-        membro = MembroOrganizacao.objects.select_related("organizacao__campanha").get(
-            pk=membro_pk
-        )
-
-    except MembroOrganizacao.DoesNotExist:
-        return Response(
-            {"erro": "Membro não encontrado."},
-            status=status.HTTP_404_NOT_FOUND
-        )
-
-    erro = _exige_mestre(request, membro.organizacao.campanha)
-
-    if erro:
-        return erro
-
-    membro.delete()
-
-    return Response(
-        {"mensagem": "Membro removido da organização com sucesso."},
-        status=status.HTTP_204_NO_CONTENT
-    )
+def organizacao_conexoes(request, organizacao_pk):
+    return _conexoes_da_entidade_view(request, Organizacao, organizacao_pk, select_related=["campanha"])
 
 
 # ---------------------------------------------------------------------------
@@ -1403,6 +1229,17 @@ def mapa_detalhe(request, mapa_pk):
         )
 
 
+@extend_schema(
+    methods=["GET"],
+    operation_id="listar_conexoes_mapa",
+    responses={200: {"type": "array", "items": {"type": "object"}}},
+)
+@api_view(["GET"])
+@permission_classes([IsAuthenticated])
+def mapa_conexoes(request, mapa_pk):
+    return _conexoes_da_entidade_view(request, Mapa, mapa_pk, select_related=["campanha"])
+
+
 # ---------------------------------------------------------------------------
 # Sessao
 # ---------------------------------------------------------------------------
@@ -1533,6 +1370,17 @@ def sessao_detalhe(request, sessao_pk):
             {"mensagem": "Sessão removida com sucesso."},
             status=status.HTTP_204_NO_CONTENT
         )
+
+
+@extend_schema(
+    methods=["GET"],
+    operation_id="listar_conexoes_sessao",
+    responses={200: {"type": "array", "items": {"type": "object"}}},
+)
+@api_view(["GET"])
+@permission_classes([IsAuthenticated])
+def sessao_conexoes(request, sessao_pk):
+    return _conexoes_da_entidade_view(request, Sessao, sessao_pk, select_related=["campanha"])
 
 
 # ---------------------------------------------------------------------------
@@ -1667,6 +1515,17 @@ def missao_detalhe(request, missao_pk):
         )
 
 
+@extend_schema(
+    methods=["GET"],
+    operation_id="listar_conexoes_missao",
+    responses={200: {"type": "array", "items": {"type": "object"}}},
+)
+@api_view(["GET"])
+@permission_classes([IsAuthenticated])
+def missao_conexoes(request, missao_pk):
+    return _conexoes_da_entidade_view(request, Missao, missao_pk, select_related=["campanha"])
+
+
 # ---------------------------------------------------------------------------
 # Evento
 # ---------------------------------------------------------------------------
@@ -1795,6 +1654,529 @@ def evento_detalhe(request, evento_pk):
 
         return Response(
             {"mensagem": "Evento removido com sucesso."},
+            status=status.HTTP_204_NO_CONTENT
+        )
+
+
+@extend_schema(
+    methods=["GET"],
+    operation_id="listar_conexoes_evento",
+    responses={200: {"type": "array", "items": {"type": "object"}}},
+)
+@api_view(["GET"])
+@permission_classes([IsAuthenticated])
+def evento_conexoes(request, evento_pk):
+    return _conexoes_da_entidade_view(request, Evento, evento_pk, select_related=["campanha"])
+
+
+# ---------------------------------------------------------------------------
+# Pasta — árvore de organização estilo Obsidian (seção 3 da refatoração)
+# ---------------------------------------------------------------------------
+
+@extend_schema(
+    methods=["GET"],
+    operation_id="listar_pastas",
+    responses=PastaSerializer(many=True),
+)
+@extend_schema(
+    methods=["POST"],
+    operation_id="criar_pasta",
+    request=PastaSerializer,
+    responses=PastaSerializer,
+)
+@api_view(["GET", "POST"])
+@permission_classes([IsAuthenticated])
+def pasta_lista(request, pk):
+    """
+    Lista/cria pastas de uma campanha. A lista é sempre "flat" (não
+    aninhada): cada Pasta já traz `pasta_pai`, e é responsabilidade do
+    cliente (futuramente, a UI estilo Obsidian) montar a árvore a partir
+    disso — o mesmo princípio usado pelo restante da API (sem aninhar
+    payloads grandes).
+    """
+
+    campanha, erro = _busca_campanha_do_participante(request, pk)
+
+    if erro:
+        return erro
+
+    if request.method == "GET":
+
+        pastas = campanha.pastas.all().order_by("pasta_pai_id", "ordem", "nome")
+
+        return Response(PastaSerializer(pastas, many=True).data)
+
+    elif request.method == "POST":
+
+        # Só o mestre organiza a árvore de pastas (seção 12: "o mestre da
+        # campanha deve possuir controle completo sobre... criação de
+        # pastas").
+        erro = _exige_mestre(request, campanha)
+
+        if erro:
+            return erro
+
+        serializer = PastaSerializer(
+            data=request.data, context={"campanha": campanha}
+        )
+
+        if serializer.is_valid():
+            pasta = serializer.save(campanha=campanha)
+
+            return Response(
+                PastaSerializer(pasta).data,
+                status=status.HTTP_201_CREATED
+            )
+
+        return Response(serializer.errors, status=status.HTTP_400_BAD_REQUEST)
+
+
+@extend_schema(
+    methods=["GET"],
+    operation_id="detalhar_pasta",
+    responses=PastaSerializer,
+)
+@extend_schema(
+    methods=["PUT"],
+    operation_id="atualizar_pasta",
+    request=PastaSerializer,
+    responses=PastaSerializer,
+)
+@extend_schema(
+    methods=["PATCH"],
+    operation_id="atualizar_parcial_pasta",
+    request=PastaSerializer,
+    responses=PastaSerializer,
+)
+@extend_schema(
+    methods=["DELETE"],
+    operation_id="remover_pasta",
+    responses=None,
+)
+@api_view(["GET", "PUT", "PATCH", "DELETE"])
+@permission_classes([IsAuthenticated])
+def pasta_detalhe(request, pasta_pk):
+    """
+    GET/PUT/PATCH cobrem leitura, renomeação e reordenação (`ordem`).
+    Mover para outra pasta-pai também é um PATCH normal aqui (`pasta_pai`)
+    — `pasta_mover` abaixo existe como um atalho semântico dedicado (seção
+    11: "mover pasta" listado como capacidade própria), mas não é a única
+    forma de mover.
+    """
+
+    try:
+        pasta = Pasta.objects.select_related("campanha", "pasta_pai").get(pk=pasta_pk)
+
+    except Pasta.DoesNotExist:
+        return Response(
+            {"erro": "Pasta não encontrada."},
+            status=status.HTTP_404_NOT_FOUND
+        )
+
+    check_object_permission(request, pasta)
+
+    if request.method == "GET":
+
+        return Response(PastaSerializer(pasta).data)
+
+    # Pastas são geridas só pelo mestre (leitura já liberada pela
+    # `check_object_permission` acima; escrita/exclusão exigem mestre
+    # explicitamente, porque Pasta não tem `editavel_para_jogadores` — a
+    # permission genérica trataria PUT/PATCH como bloqueados por padrão,
+    # mas sermos explícitos aqui deixa a regra clara e à prova de mudanças
+    # futuras no helper genérico).
+    erro = _exige_mestre(request, pasta.campanha)
+
+    if erro:
+        return erro
+
+    if request.method == "PUT":
+
+        serializer = PastaSerializer(
+            pasta, data=request.data, context={"campanha": pasta.campanha}
+        )
+
+        if serializer.is_valid():
+            serializer.save()
+            return Response(serializer.data)
+
+        return Response(serializer.errors, status=status.HTTP_400_BAD_REQUEST)
+
+    elif request.method == "PATCH":
+
+        serializer = PastaSerializer(
+            pasta, data=request.data, partial=True, context={"campanha": pasta.campanha}
+        )
+
+        if serializer.is_valid():
+            serializer.save()
+            return Response(serializer.data)
+
+        return Response(serializer.errors, status=status.HTTP_400_BAD_REQUEST)
+
+    elif request.method == "DELETE":
+
+        pasta.delete()
+
+        return Response(
+            {"mensagem": "Pasta removida com sucesso."},
+            status=status.HTTP_204_NO_CONTENT
+        )
+
+
+@extend_schema(
+    methods=["POST"],
+    operation_id="mover_pasta",
+    request={
+        "application/json": {
+            "type": "object",
+            "properties": {
+                "pasta_pai": {"type": "integer", "nullable": True},
+                "ordem": {"type": "integer"},
+            },
+        }
+    },
+    responses=PastaSerializer,
+)
+@api_view(["POST"])
+@permission_classes([IsAuthenticated])
+def pasta_mover(request, pasta_pk):
+    """
+    Atalho dedicado para mover uma pasta (mudar `pasta_pai` e/ou `ordem`)
+    — mesma validação de mesma-campanha e anti-ciclo do PATCH em
+    `pasta_detalhe`, só que como uma ação nomeada, mais próxima do que uma
+    futura UI drag-and-drop estilo Obsidian chamaria.
+    """
+
+    try:
+        pasta = Pasta.objects.select_related("campanha").get(pk=pasta_pk)
+
+    except Pasta.DoesNotExist:
+        return Response(
+            {"erro": "Pasta não encontrada."},
+            status=status.HTTP_404_NOT_FOUND
+        )
+
+    erro = _exige_mestre(request, pasta.campanha)
+
+    if erro:
+        return erro
+
+    dados = {}
+
+    if "pasta_pai" in request.data:
+        dados["pasta_pai"] = request.data["pasta_pai"]
+
+    if "ordem" in request.data:
+        dados["ordem"] = request.data["ordem"]
+
+    serializer = PastaSerializer(
+        pasta, data=dados, partial=True, context={"campanha": pasta.campanha}
+    )
+
+    if serializer.is_valid():
+        serializer.save()
+        return Response(serializer.data)
+
+    return Response(serializer.errors, status=status.HTTP_400_BAD_REQUEST)
+
+
+# ---------------------------------------------------------------------------
+# TipoConexao — vocabulário compartilhado de tipos de conexão
+# ---------------------------------------------------------------------------
+
+@extend_schema(
+    methods=["GET"],
+    operation_id="listar_tipos_conexao",
+    responses=TipoConexaoSerializer(many=True),
+)
+@extend_schema(
+    methods=["POST"],
+    operation_id="criar_tipo_conexao",
+    request=TipoConexaoSerializer,
+    responses=TipoConexaoSerializer,
+)
+@api_view(["GET", "POST"])
+@permission_classes([IsAuthenticated])
+def tipo_conexao_lista(request):
+    """
+    TipoConexao não é escopado por campanha (é um vocabulário
+    compartilhado, ex.: "Filho de", "Membro de") — por isso este endpoint
+    não é aninhado em `/campanha/<pk>/...`. Qualquer usuário autenticado
+    pode listar e cadastrar novos tipos (é só um rótulo reutilizável, sem
+    dado sensível de nenhuma campanha específica).
+    """
+
+    if request.method == "GET":
+
+        return Response(TipoConexaoSerializer(TipoConexao.objects.all(), many=True).data)
+
+    elif request.method == "POST":
+
+        serializer = TipoConexaoSerializer(data=request.data)
+
+        if serializer.is_valid():
+            tipo = serializer.save()
+
+            return Response(
+                TipoConexaoSerializer(tipo).data,
+                status=status.HTTP_201_CREATED
+            )
+
+        return Response(serializer.errors, status=status.HTTP_400_BAD_REQUEST)
+
+
+@extend_schema(
+    methods=["GET"],
+    operation_id="detalhar_tipo_conexao",
+    responses=TipoConexaoSerializer,
+)
+@extend_schema(
+    methods=["PUT"],
+    operation_id="atualizar_tipo_conexao",
+    request=TipoConexaoSerializer,
+    responses=TipoConexaoSerializer,
+)
+@extend_schema(
+    methods=["PATCH"],
+    operation_id="atualizar_parcial_tipo_conexao",
+    request=TipoConexaoSerializer,
+    responses=TipoConexaoSerializer,
+)
+@extend_schema(
+    methods=["DELETE"],
+    operation_id="remover_tipo_conexao",
+    responses=None,
+)
+@api_view(["GET", "PUT", "PATCH", "DELETE"])
+@permission_classes([IsAuthenticated])
+def tipo_conexao_detalhe(request, tipo_pk):
+
+    try:
+        tipo = TipoConexao.objects.get(pk=tipo_pk)
+
+    except TipoConexao.DoesNotExist:
+        return Response(
+            {"erro": "Tipo de conexão não encontrado."},
+            status=status.HTTP_404_NOT_FOUND
+        )
+
+    if request.method == "GET":
+
+        return Response(TipoConexaoSerializer(tipo).data)
+
+    elif request.method == "PUT":
+
+        serializer = TipoConexaoSerializer(tipo, data=request.data)
+
+        if serializer.is_valid():
+            serializer.save()
+            return Response(serializer.data)
+
+        return Response(serializer.errors, status=status.HTTP_400_BAD_REQUEST)
+
+    elif request.method == "PATCH":
+
+        serializer = TipoConexaoSerializer(tipo, data=request.data, partial=True)
+
+        if serializer.is_valid():
+            serializer.save()
+            return Response(serializer.data)
+
+        return Response(serializer.errors, status=status.HTTP_400_BAD_REQUEST)
+
+    elif request.method == "DELETE":
+
+        # `on_delete=PROTECT` em Conexao.tipo já impede a exclusão no
+        # nível do banco se houver Conexoes usando este tipo; devolvemos
+        # um erro amigável em vez de deixar vazar um IntegrityError.
+        if tipo.conexoes.exists():
+            return Response(
+                {"erro": "Este tipo de conexão está em uso e não pode ser removido."},
+                status=status.HTTP_400_BAD_REQUEST
+            )
+
+        # Só superuser remove tipos (evita que qualquer jogador apague um
+        # tipo em uso por outra campanha que não a sua).
+        if not request.user.is_superuser:
+            return Response(
+                {"erro": "Apenas um administrador pode remover tipos de conexão."},
+                status=status.HTTP_403_FORBIDDEN
+            )
+
+        tipo.delete()
+
+        return Response(
+            {"mensagem": "Tipo de conexão removido com sucesso."},
+            status=status.HTTP_204_NO_CONTENT
+        )
+
+
+# ---------------------------------------------------------------------------
+# Conexao — relacionamento genérico entre entidades de uma Campanha
+# (substitui RelacaoNPC e MembroOrganizacao — seções 6 a 10 da refatoração)
+# ---------------------------------------------------------------------------
+
+@extend_schema(
+    methods=["GET"],
+    operation_id="listar_conexoes",
+    responses=ConexaoSerializer(many=True),
+)
+@extend_schema(
+    methods=["POST"],
+    operation_id="criar_conexao",
+    request=ConexaoSerializer,
+    responses=ConexaoSerializer,
+)
+@api_view(["GET", "POST"])
+@permission_classes([IsAuthenticated])
+def conexao_lista(request, pk):
+
+    campanha, erro = _busca_campanha_do_participante(request, pk)
+
+    if erro:
+        return erro
+
+    if request.method == "GET":
+
+        conexoes = (
+            campanha.conexoes.all()
+            .select_related("tipo", "tipo__inverso", "entidade1_tipo", "entidade2_tipo")
+            .order_by("-criado_em")
+        )
+
+        # Mestre (e superuser) veem tudo; jogador só vê conexões em que AS
+        # DUAS entidades envolvidas são visíveis para ele — reaproveita a
+        # mesma regra de visibilidade (`usuario_pode_ver_objeto`) já usada
+        # para o objeto em si e para Notas, em vez de uma lógica própria.
+        if not (request.user.is_superuser or campanha.mestre == request.user):
+            conexoes = [
+                conexao for conexao in conexoes
+                if (conexao.entidade1 is None or usuario_pode_ver_objeto(request.user, conexao.entidade1))
+                and (conexao.entidade2 is None or usuario_pode_ver_objeto(request.user, conexao.entidade2))
+            ]
+
+        return Response(ConexaoSerializer(conexoes, many=True).data)
+
+    elif request.method == "POST":
+
+        # Só o mestre cria conexões (seção 12: controle completo do
+        # mestre sobre "criação de conexões").
+        erro = _exige_mestre(request, campanha)
+
+        if erro:
+            return erro
+
+        serializer = ConexaoSerializer(
+            data=request.data, context={"campanha": campanha}
+        )
+
+        if serializer.is_valid():
+            conexao = serializer.save(campanha=campanha)
+
+            return Response(
+                ConexaoSerializer(conexao).data,
+                status=status.HTTP_201_CREATED
+            )
+
+        return Response(serializer.errors, status=status.HTTP_400_BAD_REQUEST)
+
+
+@extend_schema(
+    methods=["GET"],
+    operation_id="detalhar_conexao",
+    responses=ConexaoSerializer,
+)
+@extend_schema(
+    methods=["PUT"],
+    operation_id="atualizar_conexao",
+    request=ConexaoSerializer,
+    responses=ConexaoSerializer,
+)
+@extend_schema(
+    methods=["PATCH"],
+    operation_id="atualizar_parcial_conexao",
+    request=ConexaoSerializer,
+    responses=ConexaoSerializer,
+)
+@extend_schema(
+    methods=["DELETE"],
+    operation_id="remover_conexao",
+    responses=None,
+)
+@api_view(["GET", "PUT", "PATCH", "DELETE"])
+@permission_classes([IsAuthenticated])
+def conexao_detalhe(request, conexao_pk):
+
+    try:
+        conexao = Conexao.objects.select_related(
+            "campanha", "tipo", "tipo__inverso", "entidade1_tipo", "entidade2_tipo"
+        ).get(pk=conexao_pk)
+
+    except Conexao.DoesNotExist:
+        return Response(
+            {"erro": "Conexão não encontrada."},
+            status=status.HTTP_404_NOT_FOUND
+        )
+
+    if request.method == "GET":
+
+        # Leitura: mestre sempre vê; jogador só se enxergar AMBAS as
+        # entidades (mesma regra usada em `conexao_lista`).
+        e_mestre = request.user.is_superuser or conexao.campanha.mestre == request.user
+
+        if not e_mestre:
+            e_jogador = conexao.campanha.jogadores.filter(pk=request.user.pk).exists()
+
+            pode_ver = (
+                (conexao.entidade1 is None or usuario_pode_ver_objeto(request.user, conexao.entidade1))
+                and (conexao.entidade2 is None or usuario_pode_ver_objeto(request.user, conexao.entidade2))
+            )
+
+            if not e_jogador or not pode_ver:
+                return Response(
+                    {"erro": "Você não tem permissão para acessar este recurso."},
+                    status=status.HTTP_403_FORBIDDEN
+                )
+
+        return Response(ConexaoSerializer(conexao).data)
+
+    # Escrita/exclusão: só o mestre (seção 12).
+    erro = _exige_mestre(request, conexao.campanha)
+
+    if erro:
+        return erro
+
+    if request.method == "PUT":
+
+        serializer = ConexaoSerializer(
+            conexao, data=request.data, context={"campanha": conexao.campanha}
+        )
+
+        if serializer.is_valid():
+            serializer.save()
+            return Response(serializer.data)
+
+        return Response(serializer.errors, status=status.HTTP_400_BAD_REQUEST)
+
+    elif request.method == "PATCH":
+
+        serializer = ConexaoSerializer(
+            conexao, data=request.data, partial=True, context={"campanha": conexao.campanha}
+        )
+
+        if serializer.is_valid():
+            serializer.save()
+            return Response(serializer.data)
+
+        return Response(serializer.errors, status=status.HTTP_400_BAD_REQUEST)
+
+    elif request.method == "DELETE":
+
+        conexao.delete()
+
+        return Response(
+            {"mensagem": "Conexão removida com sucesso."},
             status=status.HTTP_204_NO_CONTENT
         )
 

@@ -6,8 +6,8 @@ from django.db.models import Q
 def _get_campanha(obj):
     """
     Descobre a Campanha à qual o objeto pertence, mesmo quando o vínculo é
-    indireto (ex.: RelacaoNPC -> npc -> campanha,
-    MembroOrganizacao -> organizacao -> campanha).
+    indireto (ex.: um recurso cujo model tem `npc`/`organizacao` em vez de
+    `campanha` diretamente).
 
     Retorna None se o objeto não tiver nenhuma relação (direta ou indireta)
     com uma Campanha (ex.: o próprio Personagem, ou recursos filhos dele).
@@ -119,8 +119,8 @@ class IsOwnerOrAdmin(BasePermission):
             return False
 
         # --- Objetos "de mundo" pertencentes a uma Campanha: NPC, Local,
-        # Organizacao, Mapa, Sessao, Missao, Evento, RelacaoNPC,
-        # MembroOrganizacao, etc. Regra:
+        # Organizacao, Mapa, Sessao, Missao, Evento, Pasta, Conexao, etc.
+        # Regra:
         #   - mestre: acesso total (ler, criar, editar, excluir)
         #   - jogador: leitura só se visivel_para_jogadores=True;
         #     escrita (PUT/PATCH) só se, além de visível, também for
@@ -137,8 +137,8 @@ class IsOwnerOrAdmin(BasePermission):
             if not e_jogador:
                 return False
 
-            # Objetos sem os campos de visibilidade (ex.: RelacaoNPC,
-            # MembroOrganizacao, que são tabelas de ligação) são tratados
+            # Objetos sem os campos de visibilidade (ex.: Pasta, Conexao,
+            # que não têm noção de "rascunho do mestre") são tratados
             # como visíveis por padrão, mas não editáveis por jogadores.
             visivel = getattr(obj, "visivel_para_jogadores", True)
             editavel = getattr(obj, "editavel_para_jogadores", False)

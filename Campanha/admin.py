@@ -4,38 +4,22 @@ from django.contrib.contenttypes.admin import GenericTabularInline
 from .models import (
     Campanha,
     NPC,
-    RelacaoNPC,
     Local,
     Organizacao,
-    MembroOrganizacao,
     Mapa,
     Sessao,
     Missao,
     Evento,
     Nota,
+    Pasta,
+    TipoConexao,
+    Conexao,
 )
 
 
 # ---------------------------------------------------------------------------
 # Inlines
 # ---------------------------------------------------------------------------
-
-class RelacaoNPCInline(admin.TabularInline):
-    model = RelacaoNPC
-    fk_name = "npc"
-    extra = 0
-    autocomplete_fields = ["outro_npc"]
-    raw_id_fields = ["personagem"]
-    fields = ("personagem", "outro_npc", "tipo_relacao", "descricao")
-
-
-class MembroOrganizacaoInline(admin.TabularInline):
-    model = MembroOrganizacao
-    extra = 0
-    autocomplete_fields = ["npc"]
-    raw_id_fields = ["personagem"]
-    fields = ("personagem", "npc", "cargo")
-
 
 class NotaInline(GenericTabularInline):
     model = Nota
@@ -64,29 +48,33 @@ class CampanhaAdmin(admin.ModelAdmin):
 
 
 # ---------------------------------------------------------------------------
+# Pasta
+# ---------------------------------------------------------------------------
+
+@admin.register(Pasta)
+class PastaAdmin(admin.ModelAdmin):
+    list_display = ("nome", "campanha", "pasta_pai", "ordem", "atualizado_em")
+    list_filter = ("campanha",)
+    search_fields = ("nome", "campanha__nome")
+    autocomplete_fields = ["campanha", "pasta_pai"]
+    readonly_fields = ("criado_em", "atualizado_em")
+
+
+# ---------------------------------------------------------------------------
 # NPC
 # ---------------------------------------------------------------------------
 
 @admin.register(NPC)
 class NPCAdmin(admin.ModelAdmin):
     list_display = (
-        "nome", "apelido", "campanha", "estado_atual",
+        "nome", "apelido", "campanha", "pasta", "estado_atual",
         "visivel_para_jogadores", "editavel_para_jogadores", "atualizado_em",
     )
     list_filter = ("campanha", "estado_atual", "visivel_para_jogadores", "editavel_para_jogadores")
     search_fields = ("nome", "apelido", "campanha__nome")
-    autocomplete_fields = ["campanha", "localizacao"]
+    autocomplete_fields = ["campanha", "localizacao", "pasta"]
     readonly_fields = ("criado_em", "atualizado_em")
-    inlines = [RelacaoNPCInline, NotaInline]
-
-
-@admin.register(RelacaoNPC)
-class RelacaoNPCAdmin(admin.ModelAdmin):
-    list_display = ("npc", "origem", "tipo_relacao")
-    list_filter = ("tipo_relacao",)
-    search_fields = ("npc__nome", "tipo_relacao")
-    autocomplete_fields = ["npc", "outro_npc"]
-    raw_id_fields = ["personagem"]
+    inlines = [NotaInline]
 
 
 # ---------------------------------------------------------------------------
@@ -96,12 +84,12 @@ class RelacaoNPCAdmin(admin.ModelAdmin):
 @admin.register(Local)
 class LocalAdmin(admin.ModelAdmin):
     list_display = (
-        "nome", "campanha", "status_atual", "nivel_perigo",
+        "nome", "campanha", "pasta", "status_atual", "nivel_perigo",
         "visivel_para_jogadores", "editavel_para_jogadores", "atualizado_em",
     )
     list_filter = ("campanha", "status_atual", "visivel_para_jogadores", "editavel_para_jogadores")
     search_fields = ("nome", "campanha__nome")
-    autocomplete_fields = ["campanha"]
+    autocomplete_fields = ["campanha", "pasta"]
     readonly_fields = ("criado_em", "atualizado_em")
     inlines = [NotaInline]
 
@@ -113,32 +101,19 @@ class LocalAdmin(admin.ModelAdmin):
 @admin.register(Organizacao)
 class OrganizacaoAdmin(admin.ModelAdmin):
     list_display = (
-        "nome", "campanha", "lider", "status_atual",
+        "nome", "campanha", "pasta", "lider", "status_atual",
         "visivel_para_jogadores", "editavel_para_jogadores", "atualizado_em",
     )
     list_filter = ("campanha", "status_atual", "visivel_para_jogadores", "editavel_para_jogadores")
     search_fields = ("nome", "campanha__nome")
-    autocomplete_fields = ["campanha", "lider_npc", "sede"]
+    autocomplete_fields = ["campanha", "lider_npc", "sede", "pasta"]
     raw_id_fields = ["lider_personagem"]
     readonly_fields = ("criado_em", "atualizado_em")
-    inlines = [MembroOrganizacaoInline, NotaInline]
+    inlines = [NotaInline]
 
     @admin.display(description="Líder")
     def lider(self, obj):
         return obj.lider.nome if obj.lider else "—"
-
-
-@admin.register(MembroOrganizacao)
-class MembroOrganizacaoAdmin(admin.ModelAdmin):
-    list_display = ("organizacao", "membro", "cargo")
-    list_filter = ("organizacao",)
-    search_fields = ("organizacao__nome", "cargo")
-    autocomplete_fields = ["organizacao", "npc"]
-    raw_id_fields = ["personagem"]
-
-    @admin.display(description="Membro")
-    def membro(self, obj):
-        return obj.membro.nome if obj.membro else "—"
 
 
 # ---------------------------------------------------------------------------
@@ -148,12 +123,12 @@ class MembroOrganizacaoAdmin(admin.ModelAdmin):
 @admin.register(Mapa)
 class MapaAdmin(admin.ModelAdmin):
     list_display = (
-        "nome", "campanha", "local", "tipo",
+        "nome", "campanha", "pasta", "local", "tipo",
         "visivel_para_jogadores", "editavel_para_jogadores", "atualizado_em",
     )
     list_filter = ("campanha", "tipo", "visivel_para_jogadores", "editavel_para_jogadores")
     search_fields = ("nome", "campanha__nome")
-    autocomplete_fields = ["campanha", "local"]
+    autocomplete_fields = ["campanha", "local", "pasta"]
     readonly_fields = ("criado_em", "atualizado_em")
 
 
@@ -164,12 +139,12 @@ class MapaAdmin(admin.ModelAdmin):
 @admin.register(Sessao)
 class SessaoAdmin(admin.ModelAdmin):
     list_display = (
-        "numero", "titulo", "campanha", "data",
+        "numero", "titulo", "campanha", "pasta", "data",
         "visivel_para_jogadores", "editavel_para_jogadores",
     )
     list_filter = ("campanha", "visivel_para_jogadores", "editavel_para_jogadores")
     search_fields = ("titulo", "campanha__nome")
-    autocomplete_fields = ["campanha"]
+    autocomplete_fields = ["campanha", "pasta"]
     readonly_fields = ("criado_em", "atualizado_em")
     ordering = ("-numero",)
 
@@ -181,12 +156,12 @@ class SessaoAdmin(admin.ModelAdmin):
 @admin.register(Missao)
 class MissaoAdmin(admin.ModelAdmin):
     list_display = (
-        "titulo", "campanha", "status", "dificuldade", "local",
+        "titulo", "campanha", "pasta", "status", "dificuldade", "local",
         "visivel_para_jogadores", "editavel_para_jogadores",
     )
     list_filter = ("campanha", "status", "visivel_para_jogadores", "editavel_para_jogadores")
     search_fields = ("titulo", "campanha__nome")
-    autocomplete_fields = ["campanha", "local"]
+    autocomplete_fields = ["campanha", "local", "pasta"]
     readonly_fields = ("criado_em", "atualizado_em")
 
 
@@ -197,13 +172,36 @@ class MissaoAdmin(admin.ModelAdmin):
 @admin.register(Evento)
 class EventoAdmin(admin.ModelAdmin):
     list_display = (
-        "titulo", "campanha", "data",
+        "titulo", "campanha", "pasta", "data",
         "visivel_para_jogadores", "editavel_para_jogadores",
     )
     list_filter = ("campanha", "visivel_para_jogadores", "editavel_para_jogadores")
     search_fields = ("titulo", "campanha__nome")
-    autocomplete_fields = ["campanha"]
+    autocomplete_fields = ["campanha", "pasta"]
     filter_horizontal = ("locais", "organizacoes")
+    readonly_fields = ("criado_em", "atualizado_em")
+
+
+# ---------------------------------------------------------------------------
+# TipoConexao / Conexao
+# ---------------------------------------------------------------------------
+
+@admin.register(TipoConexao)
+class TipoConexaoAdmin(admin.ModelAdmin):
+    list_display = ("nome", "inverso", "criado_em")
+    search_fields = ("nome",)
+    autocomplete_fields = ["inverso"]
+
+
+@admin.register(Conexao)
+class ConexaoAdmin(admin.ModelAdmin):
+    list_display = (
+        "campanha", "entidade1_tipo", "entidade1_id", "tipo",
+        "entidade2_tipo", "entidade2_id", "atualizado_em",
+    )
+    list_filter = ("campanha", "tipo", "entidade1_tipo", "entidade2_tipo")
+    search_fields = ("descricao",)
+    autocomplete_fields = ["campanha", "tipo"]
     readonly_fields = ("criado_em", "atualizado_em")
 
 
