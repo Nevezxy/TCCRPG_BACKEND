@@ -404,6 +404,9 @@ class Pasta(models.Model):
     cor = models.CharField(max_length=7, blank=True, help_text="Cor hexadecimal (ex.: '#FF0000').")
 
     ordem = models.PositiveIntegerField(default=0)
+    
+    visivel_para_jogadores = models.BooleanField(default=True)
+    editavel_para_jogadores = models.BooleanField(default=False)
 
     criado_em = models.DateTimeField(auto_now_add=True)
     atualizado_em = models.DateTimeField(auto_now=True)
