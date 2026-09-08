@@ -265,6 +265,16 @@ urlpatterns = [
     ),
 
 
+    # Busca global dentro de uma campanha (nome + conteudo de todas as
+    # entidades + nome dos personagens) — usada pela coluna de pesquisa da
+    # árvore no layout estilo Obsidian.
+    path(
+        "<int:pk>/busca/",
+        views.busca_campanha,
+        name="busca_campanha"
+    ),
+
+
     # Notas (não aninhadas em campanha — o vínculo é via
     # content_type/object_id, ver NotaSerializer). Aceita filtros opcionais
     # via querystring: ?content_type=npc&object_id=5 (notas de um objeto

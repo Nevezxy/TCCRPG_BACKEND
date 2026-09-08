@@ -2430,3 +2430,89 @@ def nota_detalhe(request, pk):
             {"mensagem": "Nota removida com sucesso."},
             status=status.HTTP_204_NO_CONTENT
         )
+
+
+# ---------------------------------------------------------------------------
+# Busca global dentro de uma campanha (layout estilo Obsidian — coluna de
+# pesquisa da árvore). Procura o termo no NOME e no `conteudo` (Markdown)
+# de cada tipo de entidade + no nome dos Personagens. Respeita a mesma
+# regra de visibilidade das listagens: jogador só acha o que é visível.
+# ---------------------------------------------------------------------------
+
+_BUSCA_MODELOS = [
+    ("npc", NPC, "nome"),
+    ("local", Local, "nome"),
+    ("organizacao", Organizacao, "nome"),
+    ("mapa", Mapa, "nome"),
+    ("sessao", Sessao, "titulo"),
+    ("missao", Missao, "titulo"),
+    ("evento", Evento, "titulo"),
+]
+
+
+def _snippet(texto, termo, contexto=60):
+    """Um trecho curto do `conteudo` ao redor do primeiro match (ou o
+    começo do texto, se o match foi só no nome)."""
+    if not texto:
+        return ""
+
+    i = texto.lower().find(termo.lower())
+
+    if i == -1:
+        return texto[:120].strip().replace("\n", " ")
+
+    ini = max(0, i - contexto)
+    fim = min(len(texto), i + len(termo) + contexto)
+    trecho = texto[ini:fim].strip().replace("\n", " ")
+
+    return ("…" if ini > 0 else "") + trecho + ("…" if fim < len(texto) else "")
+
+
+@extend_schema(
+    methods=["GET"],
+    operation_id="buscar_na_campanha",
+    responses=None,
+)
+@api_view(["GET"])
+@permission_classes([IsAuthenticated])
+def busca_campanha(request, pk):
+
+    campanha, erro = _busca_campanha_do_participante(request, pk)
+
+    if erro:
+        return erro
+
+    termo = (request.query_params.get("q") or "").strip()
+
+    if len(termo) < 2:
+        return Response([])
+
+    resultados = []
+
+    for tipo, modelo, campo_nome in _BUSCA_MODELOS:
+
+        qs = _filtra_visiveis(
+            request,
+            campanha,
+            modelo.objects.filter(campanha=campanha).filter(
+                Q(**{f"{campo_nome}__icontains": termo}) | Q(conteudo__icontains=termo)
+            ),
+        )[:20]
+
+        for obj in qs:
+            resultados.append({
+                "tipo": tipo,
+                "id": obj.pk,
+                "nome": getattr(obj, campo_nome, "") or "",
+                "snippet": _snippet(getattr(obj, "conteudo", "") or "", termo),
+            })
+
+    for personagem in campanha.personagens.filter(nome__icontains=termo)[:20]:
+        resultados.append({
+            "tipo": "personagem",
+            "id": personagem.pk,
+            "nome": personagem.nome,
+            "snippet": "",
+        })
+
+    return Response(resultados)

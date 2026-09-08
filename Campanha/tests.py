@@ -577,3 +577,48 @@ class ConexaoTests(DuasCampanhasTestCase):
         )
 
         self.assertEqual(response.status_code, status.HTTP_400_BAD_REQUEST)
+
+
+# ---------------------------------------------------------------------------
+# Busca global na campanha
+# ---------------------------------------------------------------------------
+
+class BuscaCampanhaTests(DuasCampanhasTestCase):
+
+    def test_acha_por_nome_e_por_conteudo(self):
+        self.npc_a1.conteudo = "## Aparencia\n\nUm homem que carrega um amuleto de jade."
+        self.npc_a1.save()
+        Local.objects.create(campanha=self.campanha_a, nome="Vila do Jade")
+
+        self.autentica_como(self.jogador_a)
+        response = self.client.get(f"/campanha/{self.campanha_a.id}/busca/?q=jade")
+
+        self.assertEqual(response.status_code, status.HTTP_200_OK)
+        achados = {(r["tipo"], r["nome"]) for r in response.data}
+        self.assertIn(("local", "Vila do Jade"), achados)
+        self.assertIn(("npc", "Arkan"), achados)
+
+    def test_jogador_nao_acha_entidade_invisivel(self):
+        NPC.objects.create(
+            campanha=self.campanha_a, nome="Segredo Absoluto", visivel_para_jogadores=False
+        )
+
+        self.autentica_como(self.jogador_a)
+        response = self.client.get(f"/campanha/{self.campanha_a.id}/busca/?q=segredo")
+        self.assertEqual(response.status_code, status.HTTP_200_OK)
+        self.assertEqual(response.data, [])
+
+        self.autentica_como(self.mestre_a)
+        response = self.client.get(f"/campanha/{self.campanha_a.id}/busca/?q=segredo")
+        self.assertEqual(len(response.data), 1)
+
+    def test_termo_curto_devolve_lista_vazia(self):
+        self.autentica_como(self.jogador_a)
+        response = self.client.get(f"/campanha/{self.campanha_a.id}/busca/?q=a")
+        self.assertEqual(response.status_code, status.HTTP_200_OK)
+        self.assertEqual(response.data, [])
+
+    def test_nao_participante_recebe_403(self):
+        self.autentica_como(self.jogador_b)
+        response = self.client.get(f"/campanha/{self.campanha_a.id}/busca/?q=arkan")
+        self.assertEqual(response.status_code, status.HTTP_403_FORBIDDEN)
