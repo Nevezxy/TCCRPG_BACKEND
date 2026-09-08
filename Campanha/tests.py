@@ -3,7 +3,8 @@ from rest_framework.test import APITestCase
 
 from Usuario.models import Usuario
 from Personagem.models import Personagem
-from .models import Campanha, NPC, Local, Organizacao, Pasta, TipoConexao, Conexao
+from Sistema.models import Sistema
+from .models import Campanha, NPC, Local, Organizacao, Pasta, TipoConexao, Conexao, Imagem
 
 
 class DuasCampanhasTestCase(APITestCase):
@@ -622,3 +623,422 @@ class BuscaCampanhaTests(DuasCampanhasTestCase):
         self.autentica_como(self.jogador_b)
         response = self.client.get(f"/campanha/{self.campanha_a.id}/busca/?q=arkan")
         self.assertEqual(response.status_code, status.HTTP_403_FORBIDDEN)
+
+
+# ---------------------------------------------------------------------------
+# Entidades de mundo novas — Documento, Imagem, Canva, Criatura, Divindade,
+# Raca. Todas passam pela MESMA fábrica de views (`_crud_mundo`), então os
+# testes abaixo rodam parametrizados por tipo: um bug na fábrica aparece nos
+# seis de uma vez, e um tipo que esquecer de ser registrado some da lista.
+# ---------------------------------------------------------------------------
+
+ENTIDADES_NOVAS = [
+    ("documento", "documentos", {"nome": "Carta do Rei", "tipo": "Carta", "autor": "Aldric"}),
+    ("imagem", "imagens", {"nome": "Brasão Real", "legenda": "Brasão da casa real"}),
+    ("canva", "canvas", {"nome": "Mural do Caso"}),
+    ("criatura", "criaturas", {"nome": "Lobo Sombrio", "tipo": "Besta", "nivel": 3, "tamanho": "medio"}),
+    ("divindade", "divindades", {"nome": "Khalmyr", "dominio": "Justiça", "categoria": "Maior"}),
+    ("raca", "racas", {"nome": "Anão", "tipo": "Humanoide", "tamanho": "pequeno"}),
+]
+
+
+class EntidadesMundoNovasTests(DuasCampanhasTestCase):
+
+    def _cria(self, plural, payload, campanha=None):
+        campanha = campanha or self.campanha_a
+        return self.client.post(f"/campanha/{campanha.id}/{plural}/", payload, format="json")
+
+    def test_mestre_cria_e_lista_cada_tipo(self):
+        self.autentica_como(self.mestre_a)
+
+        for tipo, plural, payload in ENTIDADES_NOVAS:
+            with self.subTest(tipo=tipo):
+                response = self._cria(plural, payload)
+                self.assertEqual(response.status_code, status.HTTP_201_CREATED, response.data)
+                self.assertEqual(response.data["nome"], payload["nome"])
+                self.assertEqual(response.data["campanha"], self.campanha_a.id)
+
+                listagem = self.client.get(f"/campanha/{self.campanha_a.id}/{plural}/")
+                self.assertEqual(listagem.status_code, status.HTTP_200_OK)
+                self.assertEqual(len(listagem.data), 1)
+
+    def test_crud_completo_de_cada_tipo(self):
+        self.autentica_como(self.mestre_a)
+
+        for tipo, plural, payload in ENTIDADES_NOVAS:
+            with self.subTest(tipo=tipo):
+                criado = self._cria(plural, payload).data
+                detalhe_url = f"/campanha/{plural}/{criado['id']}/"
+
+                self.assertEqual(self.client.get(detalhe_url).status_code, status.HTTP_200_OK)
+
+                patch = self.client.patch(detalhe_url, {"conteudo": "## Anotações"}, format="json")
+                self.assertEqual(patch.status_code, status.HTTP_200_OK, patch.data)
+                self.assertEqual(patch.data["conteudo"], "## Anotações")
+
+                self.assertEqual(
+                    self.client.delete(detalhe_url).status_code, status.HTTP_204_NO_CONTENT
+                )
+                self.assertEqual(self.client.get(detalhe_url).status_code, status.HTTP_404_NOT_FOUND)
+
+    def test_campos_comuns_de_mundo_existem_em_todos(self):
+        """Pasta, ícone, cor, ordem, visibilidade e datas — o contrato que a
+        árvore da campanha e o menu de contexto do frontend assumem."""
+        self.autentica_como(self.mestre_a)
+        pasta = Pasta.objects.create(campanha=self.campanha_a, nome="Mundo")
+
+        for tipo, plural, payload in ENTIDADES_NOVAS:
+            with self.subTest(tipo=tipo):
+                response = self._cria(
+                    plural,
+                    {**payload, "pasta": pasta.id, "icone": "star", "cor": "#ff0066", "ordem": 3},
+                )
+                self.assertEqual(response.status_code, status.HTTP_201_CREATED, response.data)
+                self.assertEqual(response.data["pasta"], pasta.id)
+                self.assertEqual(response.data["icone"], "star")
+                self.assertEqual(response.data["cor"], "#ff0066")
+                self.assertEqual(response.data["ordem"], 3)
+                self.assertTrue(response.data["visivel_para_jogadores"])
+                self.assertFalse(response.data["editavel_para_jogadores"])
+                self.assertIn("criado_em", response.data)
+                self.assertIn("atualizado_em", response.data)
+                self.assertIn("conteudo", response.data)
+
+    def test_pasta_de_outra_campanha_e_rejeitada(self):
+        self.autentica_como(self.mestre_a)
+        pasta_b = Pasta.objects.create(campanha=self.campanha_b, nome="Mundo de B")
+
+        for tipo, plural, payload in ENTIDADES_NOVAS:
+            with self.subTest(tipo=tipo):
+                response = self._cria(plural, {**payload, "pasta": pasta_b.id})
+                self.assertEqual(response.status_code, status.HTTP_400_BAD_REQUEST)
+
+    def test_ordenacao_respeita_o_campo_ordem(self):
+        self.autentica_como(self.mestre_a)
+        self._cria("criaturas", {"nome": "Zumbi", "ordem": 0})
+        self._cria("criaturas", {"nome": "Ancião", "ordem": 5})
+        self._cria("criaturas", {"nome": "Basilisco", "ordem": 1})
+
+        nomes = [c["nome"] for c in self.client.get(f"/campanha/{self.campanha_a.id}/criaturas/").data]
+        self.assertEqual(nomes, ["Zumbi", "Basilisco", "Ancião"])
+
+    def test_jogador_le_mas_nao_cria_nem_exclui(self):
+        self.autentica_como(self.mestre_a)
+        criado = self._cria("divindades", {"nome": "Khalmyr"}).data
+
+        self.autentica_como(self.jogador_a)
+        self.assertEqual(
+            self.client.get(f"/campanha/divindades/{criado['id']}/").status_code, status.HTTP_200_OK
+        )
+        self.assertEqual(
+            self._cria("divindades", {"nome": "Não pode"}).status_code, status.HTTP_403_FORBIDDEN
+        )
+        self.assertEqual(
+            self.client.delete(f"/campanha/divindades/{criado['id']}/").status_code,
+            status.HTTP_403_FORBIDDEN,
+        )
+
+    def test_jogador_so_edita_quando_editavel_para_jogadores(self):
+        self.autentica_como(self.mestre_a)
+        criado = self._cria("documentos", {"nome": "Contrato"}).data
+        url = f"/campanha/documentos/{criado['id']}/"
+
+        self.autentica_como(self.jogador_a)
+        self.assertEqual(
+            self.client.patch(url, {"conteudo": "x"}, format="json").status_code,
+            status.HTTP_403_FORBIDDEN,
+        )
+
+        self.autentica_como(self.mestre_a)
+        self.client.patch(url, {"editavel_para_jogadores": True}, format="json")
+
+        self.autentica_como(self.jogador_a)
+        self.assertEqual(
+            self.client.patch(url, {"conteudo": "ok"}, format="json").status_code, status.HTTP_200_OK
+        )
+
+    def test_jogador_editor_nao_altera_as_flags_de_visibilidade(self):
+        """Mesma regra de `RestringeCamposDeMestreMixin` já aplicada aos
+        tipos antigos: poder editar o conteúdo não é poder se esconder."""
+        self.autentica_como(self.mestre_a)
+        criado = self._cria("documentos", {"nome": "Contrato", "editavel_para_jogadores": True}).data
+        url = f"/campanha/documentos/{criado['id']}/"
+
+        self.autentica_como(self.jogador_a)
+        response = self.client.patch(url, {"visivel_para_jogadores": False}, format="json")
+
+        self.assertEqual(response.status_code, status.HTTP_200_OK)
+        self.assertTrue(response.data["visivel_para_jogadores"])
+
+    def test_jogador_nao_ve_entidade_invisivel_na_listagem(self):
+        self.autentica_como(self.mestre_a)
+        self._cria("racas", {"nome": "Secreta", "visivel_para_jogadores": False})
+        self._cria("racas", {"nome": "Pública"})
+
+        self.autentica_como(self.jogador_a)
+        nomes = [r["nome"] for r in self.client.get(f"/campanha/{self.campanha_a.id}/racas/").data]
+
+        self.assertEqual(nomes, ["Pública"])
+
+    def test_jogador_de_outra_campanha_nao_acessa(self):
+        self.autentica_como(self.mestre_a)
+        criado = self._cria("criaturas", {"nome": "Lobo"}).data
+
+        self.autentica_como(self.jogador_b)
+        self.assertEqual(
+            self.client.get(f"/campanha/{self.campanha_a.id}/criaturas/").status_code,
+            status.HTTP_403_FORBIDDEN,
+        )
+        self.assertEqual(
+            self.client.get(f"/campanha/criaturas/{criado['id']}/").status_code,
+            status.HTTP_403_FORBIDDEN,
+        )
+
+    def test_local_precisa_ser_da_mesma_campanha(self):
+        self.autentica_como(self.mestre_a)
+        local_b = Local.objects.create(campanha=self.campanha_b, nome="Fora")
+
+        for plural in ("documentos", "criaturas"):
+            with self.subTest(plural=plural):
+                response = self._cria(plural, {"nome": "Intrusa", "local": local_b.id})
+                self.assertEqual(response.status_code, status.HTTP_400_BAD_REQUEST)
+
+    def test_entram_na_busca_global(self):
+        self.autentica_como(self.mestre_a)
+        self._cria("divindades", {"nome": "Khalmyr"})
+        self._cria("racas", {"nome": "Elfo", "conteudo": "Vivem nas florestas de Lenórienn."})
+
+        por_nome = self.client.get(f"/campanha/{self.campanha_a.id}/busca/?q=Khalmyr").data
+        self.assertTrue(any(r["tipo"] == "divindade" for r in por_nome))
+
+        por_conteudo = self.client.get(f"/campanha/{self.campanha_a.id}/busca/?q=Lenórienn").data
+        self.assertTrue(any(r["tipo"] == "raca" for r in por_conteudo))
+
+    def test_podem_ser_duplicadas(self):
+        self.autentica_como(self.mestre_a)
+
+        for tipo, plural, payload in ENTIDADES_NOVAS:
+            with self.subTest(tipo=tipo):
+                criado = self._cria(plural, payload).data
+                response = self.client.post(
+                    f"/campanha/{self.campanha_a.id}/entidades/duplicar/",
+                    {"tipo": tipo, "id": criado["id"]},
+                    format="json",
+                )
+                self.assertEqual(response.status_code, status.HTTP_201_CREATED, response.data)
+                self.assertEqual(response.data["nome"], f"{payload['nome']} (cópia)")
+
+    def test_aceitam_notas_e_conexoes(self):
+        self.autentica_como(self.mestre_a)
+        divindade = self._cria("divindades", {"nome": "Khalmyr"}).data
+        raca = self._cria("racas", {"nome": "Anão"}).data
+
+        nota = self.client.post(
+            "/campanha/notas/",
+            {"content_type": "divindade", "object_id": divindade["id"], "conteudo": "Padroeira dos anões."},
+            format="json",
+        )
+        self.assertEqual(nota.status_code, status.HTTP_201_CREATED, nota.data)
+
+        tipo_conexao = TipoConexao.objects.create(nome="Cultuada por")
+        conexao = self.client.post(
+            f"/campanha/{self.campanha_a.id}/conexoes/",
+            {
+                "entidade1_tipo": "divindade",
+                "entidade1_id": divindade["id"],
+                "entidade2_tipo": "raca",
+                "entidade2_id": raca["id"],
+                "tipo": tipo_conexao.id,
+            },
+            format="json",
+        )
+        self.assertEqual(conexao.status_code, status.HTTP_201_CREATED, conexao.data)
+
+        conexoes = self.client.get(f"/campanha/divindades/{divindade['id']}/conexoes/")
+        self.assertEqual(conexoes.status_code, status.HTTP_200_OK)
+        self.assertEqual(len(conexoes.data), 1)
+        self.assertEqual(conexoes.data[0]["entidade"]["tipo"], "raca")
+
+
+class CanvaTests(DuasCampanhasTestCase):
+
+    def test_persiste_o_estado_completo_do_quadro(self):
+        self.autentica_como(self.mestre_a)
+        dados = {
+            "versao": 1,
+            "fundo": {"cor": "#101014", "padrao": "grade"},
+            "viewport": {"x": -120, "y": 40, "zoom": 1.5},
+            "objetos": [
+                {
+                    "id": "o1", "tipo": "postit", "x": 10, "y": 20, "w": 180, "h": 180,
+                    "rotacao": -4, "z": 1, "estilo": {"fundo": "#ffd866"}, "conteudo": "Pista",
+                },
+                {
+                    "id": "o2", "tipo": "entidade", "x": 300, "y": 20, "w": 220, "h": 90,
+                    "rotacao": 0, "z": 2, "entidade": {"tipo": "npc", "id": self.npc_a1.id},
+                },
+                {"id": "o3", "tipo": "seta", "z": 3, "de": "o1", "para": "o2"},
+            ],
+        }
+
+        criado = self.client.post(
+            f"/campanha/{self.campanha_a.id}/canvas/", {"nome": "Mural", "dados": dados}, format="json"
+        )
+        self.assertEqual(criado.status_code, status.HTTP_201_CREATED, criado.data)
+
+        lido = self.client.get(f"/campanha/canvas/{criado.data['id']}/").data
+        self.assertEqual(lido["dados"], dados)
+
+    def test_referencia_a_entidade_nao_duplica_os_dados_dela(self):
+        """O objeto guarda `{tipo, id}` — renomear o NPC reflete no quadro,
+        porque o nome nunca foi copiado para dentro do JSON."""
+        self.autentica_como(self.mestre_a)
+        criado = self.client.post(
+            f"/campanha/{self.campanha_a.id}/canvas/",
+            {
+                "nome": "Mural",
+                "dados": {"objetos": [{"id": "o1", "tipo": "entidade", "entidade": {"tipo": "npc", "id": self.npc_a1.id}}]},
+            },
+            format="json",
+        ).data
+
+        self.npc_a1.nome = "Arkan, o Renegado"
+        self.npc_a1.save()
+
+        objeto = self.client.get(f"/campanha/canvas/{criado['id']}/").data["dados"]["objetos"][0]
+        self.assertNotIn("nome", objeto)
+        self.assertEqual(objeto["entidade"], {"tipo": "npc", "id": self.npc_a1.id})
+
+    def test_dados_invalidos_sao_rejeitados(self):
+        self.autentica_como(self.mestre_a)
+
+        for dados in ([1, 2, 3], "texto", {"objetos": "não é lista"}):
+            with self.subTest(dados=dados):
+                response = self.client.post(
+                    f"/campanha/{self.campanha_a.id}/canvas/", {"nome": "X", "dados": dados}, format="json"
+                )
+                self.assertEqual(response.status_code, status.HTTP_400_BAD_REQUEST)
+
+    def test_dados_nasce_como_objeto_vazio(self):
+        self.autentica_como(self.mestre_a)
+        response = self.client.post(f"/campanha/{self.campanha_a.id}/canvas/", {"nome": "Novo"}, format="json")
+
+        self.assertEqual(response.status_code, status.HTTP_201_CREATED)
+        self.assertEqual(response.data["dados"], {})
+
+
+class ImagemReferenciaTests(DuasCampanhasTestCase):
+    """
+    `![[Nome da Imagem]]` dentro do `conteudo` de qualquer entidade é
+    resolvido pelo frontend contra a listagem de Imagens da campanha (ver
+    `src/hooks/useImagensCampanha.ts`). O que precisa valer aqui é o
+    contrato do qual essa resolução depende: nome único por campanha e
+    visibilidade respeitada na listagem — uma Imagem escondida do jogador
+    não pode aparecer nem ter a URL do arquivo enviada a ele.
+    """
+
+    def setUp(self):
+        super().setUp()
+        self.autentica_como(self.mestre_a)
+        self.publica = Imagem.objects.create(campanha=self.campanha_a, nome="Brasão Real")
+        self.secreta = Imagem.objects.create(
+            campanha=self.campanha_a, nome="Mapa do Tesouro", visivel_para_jogadores=False
+        )
+
+    def test_listagem_traz_o_necessario_para_resolver_a_referencia(self):
+        response = self.client.get(f"/campanha/{self.campanha_a.id}/imagens/")
+
+        self.assertEqual(response.status_code, status.HTTP_200_OK)
+        self.assertEqual(len(response.data), 2)
+        for campo in ("id", "nome", "imagem", "legenda", "creditos"):
+            self.assertIn(campo, response.data[0])
+
+    def test_imagem_invisivel_nao_chega_ao_jogador(self):
+        self.autentica_como(self.jogador_a)
+        nomes = [i["nome"] for i in self.client.get(f"/campanha/{self.campanha_a.id}/imagens/").data]
+
+        self.assertEqual(nomes, ["Brasão Real"])
+
+    def test_nao_participante_nao_acessa_as_imagens(self):
+        self.autentica_como(self.jogador_b)
+        response = self.client.get(f"/campanha/{self.campanha_a.id}/imagens/")
+
+        self.assertEqual(response.status_code, status.HTTP_403_FORBIDDEN)
+
+    def test_nome_e_unico_por_campanha(self):
+        """Sem isso, `![[Brasão Real]]` seria ambíguo."""
+        response = self.client.post(
+            f"/campanha/{self.campanha_a.id}/imagens/", {"nome": "Brasão Real"}, format="json"
+        )
+
+        self.assertEqual(response.status_code, status.HTTP_400_BAD_REQUEST)
+        self.assertIn("nome", response.data)
+
+    def test_mesmo_nome_em_outra_campanha_e_permitido(self):
+        self.autentica_como(self.mestre_b)
+        response = self.client.post(
+            f"/campanha/{self.campanha_b.id}/imagens/", {"nome": "Brasão Real"}, format="json"
+        )
+
+        self.assertEqual(response.status_code, status.HTTP_201_CREATED)
+
+
+class MultiplasBibliotecasTests(DuasCampanhasTestCase):
+    """
+    `sistema` (FK, principal) e `sistemas` (M2M) precisam continuar
+    coerentes — é o que mantém campanhas/fichas antigas funcionando depois
+    da mudança para várias bibliotecas de regras (seção 1).
+    """
+
+    def setUp(self):
+        super().setUp()
+        self.s1 = Sistema.objects.create(nome="Tormenta 20")
+        self.s2 = Sistema.objects.create(nome="Homebrew da Casa")
+        self.autentica_como(self.mestre_a)
+
+    def test_campanha_aceita_varias_bibliotecas(self):
+        response = self.client.patch(
+            f"/campanha/{self.campanha_a.id}/", {"sistemas": [self.s1.id, self.s2.id]}, format="json"
+        )
+
+        self.assertEqual(response.status_code, status.HTTP_200_OK, response.data)
+        self.assertCountEqual(response.data["sistemas"], [self.s1.id, self.s2.id])
+
+    def test_primeiro_da_lista_vira_o_sistema_principal(self):
+        self.client.patch(f"/campanha/{self.campanha_a.id}/", {"sistemas": [self.s1.id, self.s2.id]}, format="json")
+        self.campanha_a.refresh_from_db()
+
+        self.assertEqual(self.campanha_a.sistema_id, self.s1.id)
+
+    def test_patch_antigo_com_sistema_unico_continua_funcionando(self):
+        """Fluxo do seletor de sistema anterior a esta mudança."""
+        self.client.patch(f"/campanha/{self.campanha_a.id}/", {"sistema": self.s1.id}, format="json")
+        self.campanha_a.refresh_from_db()
+
+        self.assertEqual(self.campanha_a.sistema_id, self.s1.id)
+        self.assertEqual(list(self.campanha_a.sistemas.values_list("id", flat=True)), [self.s1.id])
+
+    def test_remover_o_principal_promove_o_que_sobrou(self):
+        self.client.patch(f"/campanha/{self.campanha_a.id}/", {"sistemas": [self.s1.id, self.s2.id]}, format="json")
+        self.client.patch(f"/campanha/{self.campanha_a.id}/", {"sistemas": [self.s2.id]}, format="json")
+        self.campanha_a.refresh_from_db()
+
+        self.assertEqual(self.campanha_a.sistema_id, self.s2.id)
+
+    def test_lista_vazia_zera_o_principal(self):
+        self.client.patch(f"/campanha/{self.campanha_a.id}/", {"sistemas": [self.s1.id]}, format="json")
+        self.client.patch(f"/campanha/{self.campanha_a.id}/", {"sistemas": []}, format="json")
+        self.campanha_a.refresh_from_db()
+
+        self.assertIsNone(self.campanha_a.sistema_id)
+
+    def test_personagem_tambem_aceita_varias_bibliotecas(self):
+        personagem = Personagem.objects.create(usuario=self.jogador_a, nome="Arkan", sistema=self.s1)
+        self.autentica_como(self.jogador_a)
+
+        response = self.client.patch(
+            f"/personagem/{personagem.id}/", {"sistemas": [self.s1.id, self.s2.id]}, format="json"
+        )
+
+        self.assertEqual(response.status_code, status.HTTP_200_OK, response.data)
+        self.assertCountEqual(response.data["sistemas"], [self.s1.id, self.s2.id])

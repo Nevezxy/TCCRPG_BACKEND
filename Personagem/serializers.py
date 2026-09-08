@@ -1,4 +1,5 @@
 from rest_framework import serializers
+from Sistema.serializers import SincronizaSistemasMixin
 from drf_spectacular.utils import extend_schema_field
 
 from .models import *
@@ -26,7 +27,7 @@ class CloudinaryUrlSerializerMixin:
         return data
 
 
-class PersonagemSerializer(CloudinaryUrlSerializerMixin, serializers.ModelSerializer):
+class PersonagemSerializer(SincronizaSistemasMixin, CloudinaryUrlSerializerMixin, serializers.ModelSerializer):
 
     media_fields = ["foto", "banner"]
 

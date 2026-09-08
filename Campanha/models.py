@@ -27,7 +27,17 @@ class Campanha(models.Model):
 
     codigo = models.CharField(max_length=5, unique=True, editable=False, db_index=True)
 
+    # `sistema` (FK) continua existindo como o sistema PRINCIPAL da campanha
+    # — é o que campanhas antigas já têm gravado e o que o resto do app usa
+    # quando precisa de UM sistema só (ex.: features de `systemConfig`).
+    # `sistemas` (M2M) é a lista completa de bibliotecas de regras em uso:
+    # uma mesa pode combinar "Tormenta" + "homebrew da casa" + "suplemento X".
+    # Os dois são mantidos em sincronia pelo serializer (ver
+    # CampanhaSerializer.sincroniza_sistemas) para não quebrar nada que ainda
+    # lê `sistema`; a migration 0013 popula `sistemas` a partir de `sistema`.
     sistema = models.ForeignKey(Sistema, on_delete=models.SET_NULL, related_name='campanhas', blank=True, null=True)
+
+    sistemas = models.ManyToManyField(Sistema, related_name='campanhas_bibliotecas', blank=True)
 
     criado_em = models.DateTimeField(auto_now_add=True)
     atualizado_em = models.DateTimeField(auto_now=True)
@@ -510,7 +520,11 @@ def modelos_conectaveis():
     """
     from Personagem.models import Personagem as _Personagem
 
-    return [NPC, Local, Organizacao, Mapa, Sessao, Missao, Evento, _Personagem]
+    return [
+        NPC, Local, Organizacao, Mapa, Sessao, Missao, Evento,
+        Documento, Imagem, Canva, Criatura, Divindade, Raca,
+        _Personagem,
+    ]
 
 
 class Conexao(models.Model):
@@ -594,3 +608,266 @@ class Conexao(models.Model):
             models.Index(fields=["entidade1_tipo", "entidade1_id"]),
             models.Index(fields=["entidade2_tipo", "entidade2_id"]),
         ]
+
+# ---------------------------------------------------------------------------
+# EntidadeMundo — base ABSTRATA das entidades de mundo criadas a partir daqui
+# (Documento, Imagem, Canva, Criatura, Divindade, Raca).
+#
+# Os 7 models originais (NPC, Local, Organizacao, Mapa, Sessao, Missao,
+# Evento) repetem, um a um, exatamente este mesmo bloco de campos. A base
+# existe para que as entidades NOVAS não continuem multiplicando essa
+# repetição — e para que qualquer campo comum futuro entre em um lugar só.
+#
+# Por que os models antigos NÃO foram migrados para cá: `abstract = True`
+# gera exatamente as mesmas colunas, então a mudança seria cosmética no
+# banco, mas obrigaria a reescrever 7 models já em produção (com risco de
+# `AlterField` desnecessário em campanhas existentes) sem ganho funcional
+# nenhum. A compatibilidade vem antes da simetria — ver seção 10 da tarefa.
+#
+# `campanha`/`pasta` ficam nos models CONCRETOS porque o `related_name`
+# precisa do plural correto em português (`imagens`, não o `imagems` que
+# `%(class)ss` produziria na base abstrata).
+# ---------------------------------------------------------------------------
+
+TAMANHO_CHOICES = [
+    ("minusculo", "Minúsculo"),
+    ("pequeno", "Pequeno"),
+    ("medio", "Médio"),
+    ("grande", "Grande"),
+    ("enorme", "Enorme"),
+    ("colossal", "Colossal"),
+]
+
+
+class EntidadeMundo(models.Model):
+
+    nome = models.CharField(max_length=200, db_index=True)
+
+    # Mesmo campo Markdown único das demais entidades (ver nota em NPC.conteudo).
+    conteudo = models.TextField(blank=True)
+
+    icone = models.CharField(max_length=100, blank=True, help_text="Nome do ícone lucide (ex.: 'user', 'map-pin').")
+    cor = models.CharField(max_length=7, blank=True, help_text="Cor hexadecimal (ex.: '#FF0000').")
+
+    ordem = models.PositiveIntegerField(default=0)
+
+    visivel_para_jogadores = models.BooleanField(default=True)
+    editavel_para_jogadores = models.BooleanField(default=False)
+
+    criado_em = models.DateTimeField(auto_now_add=True)
+    atualizado_em = models.DateTimeField(auto_now=True)
+
+    class Meta:
+        abstract = True
+        # Diferente dos models antigos (ordenados só por nome nas views), as
+        # entidades novas já nascem respeitando o campo `ordem`, com o nome
+        # como desempate estável.
+        ordering = ["ordem", "nome"]
+
+    def __str__(self):
+        return self.nome
+
+
+class Documento(EntidadeMundo):
+    """
+    Documento "in-fiction" da campanha: cartas, contratos, diários, panfletos,
+    profecias. Diferente de Nota (que é um comentário PESSOAL de um
+    participante sobre outro objeto), o Documento é uma entidade de mundo
+    completa — tem pasta, ícone, cor, visibilidade e conteúdo em Markdown.
+    """
+
+    campanha = models.ForeignKey(Campanha, on_delete=models.CASCADE, related_name="documentos")
+
+    pasta = models.ForeignKey(
+        "Pasta", on_delete=models.SET_NULL, null=True, blank=True, related_name="documentos"
+    )
+
+    imagem = CloudinaryField("Imagem", blank=True, null=True)
+
+    tipo = models.CharField(max_length=100, blank=True, help_text="Ex.: Carta, Contrato, Diário, Profecia.")
+    autor = models.CharField(max_length=200, blank=True, help_text="Quem escreveu o documento dentro da ficção.")
+    data = models.CharField(max_length=200, blank=True, help_text="Data in-fiction (texto livre).")
+
+    local = models.ForeignKey(
+        Local, on_delete=models.SET_NULL, null=True, blank=True, related_name="documentos"
+    )
+
+    class Meta(EntidadeMundo.Meta):
+        verbose_name = "Documento"
+        verbose_name_plural = "Documentos"
+
+
+class Imagem(EntidadeMundo):
+    """
+    Imagem reutilizável da campanha. Além de ser uma entidade de mundo como
+    as outras, é o alvo das REFERÊNCIAS de imagem no Markdown: qualquer
+    entidade pode escrever `![[Nome da Imagem]]` no `conteudo` e o frontend
+    resolve isso contra esta tabela (ver o endpoint
+    `GET /campanha/<pk>/imagens/referencias/` em views.py), sem exigir um
+    novo upload do mesmo arquivo.
+
+    Consequências dessa escolha, todas intencionais:
+      - PERMISSÃO: o endpoint de referências aplica a MESMA regra de
+        visibilidade das listagens (`visivel_para_jogadores`), então uma
+        imagem escondida do jogador não entra no índice dele e a referência
+        aparece como "imagem não encontrada" — a URL do arquivo nunca é
+        enviada para quem não pode vê-la.
+      - EXCLUSÃO: apagar a Imagem não reescreve o Markdown de ninguém (isso
+        exigiria varrer e mutar o conteúdo de todas as entidades). A
+        referência deixa de resolver e é renderizada como um marcador
+        visível de "imagem não encontrada", em vez de sumir em silêncio.
+      - RENOMEAR: a referência é pelo NOME (mesma convenção dos
+        `[[wiki-links]]` já existentes), por isso o nome é único por
+        campanha. Renomear quebra as referências antigas, exatamente como já
+        acontece com wiki-links.
+    """
+
+    campanha = models.ForeignKey(Campanha, on_delete=models.CASCADE, related_name="imagens")
+
+    pasta = models.ForeignKey(
+        "Pasta", on_delete=models.SET_NULL, null=True, blank=True, related_name="imagens"
+    )
+
+    imagem = CloudinaryField("Imagem", blank=True, null=True)
+
+    legenda = models.CharField(max_length=300, blank=True)
+    creditos = models.CharField(max_length=200, blank=True, help_text="Autoria/fonte da imagem.")
+
+    class Meta(EntidadeMundo.Meta):
+        verbose_name = "Imagem"
+        verbose_name_plural = "Imagens"
+
+        constraints = [
+            # A referência `![[Nome]]` no Markdown é resolvida pelo nome —
+            # dois nomes iguais na mesma campanha tornariam a resolução
+            # ambígua.
+            models.UniqueConstraint(
+                fields=["campanha", "nome"],
+                name="imagem_nome_unico_por_campanha",
+            ),
+        ]
+
+
+class Canva(EntidadeMundo):
+    """
+    Quadro visual livre (mapa mental, diagrama, organograma, mural de
+    investigação). Todo o estado do editor mora em `dados` (JSON), num
+    formato versionado pelo frontend — ver `src/types/canva.ts`:
+
+        {
+          "versao": 1,
+          "fundo": { "cor": "#0e0f13", "padrao": "grade" },
+          "viewport": { "x": 0, "y": 0, "zoom": 1 },
+          "objetos": [ { "id", "tipo", "x", "y", "w", "h", "rotacao",
+                         "z", "estilo", "conteudo", "entidade", "de", "para" } ]
+        }
+
+    Um JSONField único (em vez de uma tabela por tipo de objeto) é o que
+    permite ao editor ganhar ferramentas novas sem uma migration por
+    ferramenta; e o quadro inteiro é sempre lido e salvo de uma vez só,
+    então não há ganho em normalizar. Objetos que apontam para uma entidade
+    da campanha guardam `{"tipo": "npc", "id": 12}` em `entidade` — uma
+    REFERÊNCIA, não uma cópia dos dados (nome/foto são resolvidos na
+    leitura, então renomear a entidade reflete no quadro).
+    """
+
+    campanha = models.ForeignKey(Campanha, on_delete=models.CASCADE, related_name="canvas")
+
+    pasta = models.ForeignKey(
+        "Pasta", on_delete=models.SET_NULL, null=True, blank=True, related_name="canvas"
+    )
+
+    # Miniatura/exportação do quadro — opcional, preenchida pelo botão
+    # "Exportar como imagem" do editor.
+    imagem = CloudinaryField("Imagem", blank=True, null=True)
+
+    dados = models.JSONField(default=dict, blank=True)
+
+    class Meta(EntidadeMundo.Meta):
+        verbose_name = "Canva"
+        verbose_name_plural = "Canvas"
+
+
+class Criatura(EntidadeMundo):
+    """Bestiário da campanha — monstros, animais, aberrações."""
+
+    campanha = models.ForeignKey(Campanha, on_delete=models.CASCADE, related_name="criaturas")
+
+    pasta = models.ForeignKey(
+        "Pasta", on_delete=models.SET_NULL, null=True, blank=True, related_name="criaturas"
+    )
+
+    foto = CloudinaryField("Foto", blank=True, null=True)
+
+    tipo = models.CharField(max_length=100, blank=True, help_text="Ex.: Besta, Morto-vivo, Aberração.")
+    habitat = models.CharField(max_length=200, blank=True)
+    nivel = models.PositiveIntegerField(blank=True, null=True)
+    tamanho = models.CharField(max_length=20, choices=TAMANHO_CHOICES, blank=True)
+
+    comportamento = models.CharField(max_length=20, choices=[
+        ("passivo", "Passivo"),
+        ("defensivo", "Defensivo"),
+        ("territorial", "Territorial"),
+        ("agressivo", "Agressivo"),
+        ("hostil", "Hostil"),
+    ], blank=True)
+
+    # Onde a criatura é encontrada, de forma ESTRUTURADA (`habitat` é o
+    # texto livre) — mesmo padrão de NPC.localizacao.
+    local = models.ForeignKey(
+        Local, on_delete=models.SET_NULL, null=True, blank=True, related_name="criaturas"
+    )
+
+    class Meta(EntidadeMundo.Meta):
+        verbose_name = "Criatura"
+        verbose_name_plural = "Criaturas"
+
+
+class Divindade(EntidadeMundo):
+    """Panteão da campanha — deuses, entidades e forças cultuadas."""
+
+    campanha = models.ForeignKey(Campanha, on_delete=models.CASCADE, related_name="divindades")
+
+    pasta = models.ForeignKey(
+        "Pasta", on_delete=models.SET_NULL, null=True, blank=True, related_name="divindades"
+    )
+
+    foto = CloudinaryField("Foto", blank=True, null=True)
+    # Segunda imagem, independente da foto: o símbolo sagrado costuma ser
+    # exibido JUNTO do retrato (ver EntidadePanel), não no lugar dele.
+    simbolo = CloudinaryField("Símbolo", blank=True, null=True)
+
+    dominio = models.CharField(max_length=200, blank=True, help_text="Ex.: Guerra, Morte, Colheita.")
+    alinhamento = models.CharField(max_length=100, blank=True)
+    categoria = models.CharField(max_length=100, blank=True, help_text="Ex.: Maior, Menor, Semideus.")
+    adoradores = models.CharField(max_length=300, blank=True)
+    plano = models.CharField(max_length=200, blank=True)
+
+    class Meta(EntidadeMundo.Meta):
+        verbose_name = "Divindade"
+        verbose_name_plural = "Divindades"
+
+
+class Raca(EntidadeMundo):
+    """Povos e raças (jogáveis ou não) da campanha."""
+
+    campanha = models.ForeignKey(Campanha, on_delete=models.CASCADE, related_name="racas")
+
+    pasta = models.ForeignKey(
+        "Pasta", on_delete=models.SET_NULL, null=True, blank=True, related_name="racas"
+    )
+
+    imagem = CloudinaryField("Imagem", blank=True, null=True)
+
+    tipo = models.CharField(max_length=100, blank=True, help_text="Ex.: Humanoide, Constructo, Feérico.")
+    alinhamento = models.CharField(max_length=100, blank=True)
+    tamanho = models.CharField(max_length=20, choices=TAMANHO_CHOICES, blank=True)
+    expectativa_vida = models.CharField(max_length=100, blank=True)
+    tipo_sociedade = models.CharField(max_length=200, blank=True)
+
+    tendencias = models.TextField(blank=True)
+    tracos_raciais = models.TextField(blank=True)
+
+    class Meta(EntidadeMundo.Meta):
+        verbose_name = "Raça"
+        verbose_name_plural = "Raças"

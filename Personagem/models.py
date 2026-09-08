@@ -31,7 +31,14 @@ class Personagem(models.Model):
     relacionamentos = models.TextField(blank=True)
     objetivos = models.TextField(blank=True)
 
+    # `sistema` (FK) = sistema PRINCIPAL do personagem — o que campanhas e
+    # fichas antigas já têm gravado e o que `systemConfig` usa para decidir
+    # features. `sistemas` (M2M) = todas as bibliotecas de regras que este
+    # personagem pode consultar (ex.: o sistema base + um suplemento).
+    # Mantidos em sincronia pelo PersonagemSerializer; a migration de dados
+    # 0019 popula `sistemas` a partir de `sistema`.
     sistema = models.ForeignKey(Sistema, on_delete=models.SET_NULL, related_name='personagens', blank=True, null=True)
+    sistemas = models.ManyToManyField(Sistema, related_name='personagens_bibliotecas', blank=True)
     
     criado_em = models.DateTimeField(auto_now_add=True)
     atualizado_em = models.DateTimeField(auto_now=True)

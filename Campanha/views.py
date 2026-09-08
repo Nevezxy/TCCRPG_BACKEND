@@ -26,6 +26,12 @@ from .models import (
     Pasta,
     TipoConexao,
     Conexao,
+    Documento,
+    Imagem,
+    Canva,
+    Criatura,
+    Divindade,
+    Raca,
 )
 from Usuario.permissions import check_object_permission, pode_criar_ou_excluir, usuario_pode_ver_objeto
 from .serializers import (
@@ -41,6 +47,12 @@ from .serializers import (
     PastaSerializer,
     TipoConexaoSerializer,
     ConexaoSerializer,
+    DocumentoSerializer,
+    ImagemSerializer,
+    CanvaSerializer,
+    CriaturaSerializer,
+    DivindadeSerializer,
+    RacaSerializer,
     campanhas_do_objeto_notavel,
     conexoes_de_entidade,
 )
@@ -2257,7 +2269,10 @@ def nota_lista(request):
 
             notas = Nota.objects.filter(usuario=request.user).select_related("usuario", "personagem").order_by("-atualizado_em")
 
-            modelos_com_campanha = [Campanha, NPC, Local, Organizacao, Mapa, Sessao, Missao, Evento]
+            modelos_com_campanha = [
+                Campanha, NPC, Local, Organizacao, Mapa, Sessao, Missao, Evento,
+                Documento, Imagem, Canva, Criatura, Divindade, Raca,
+            ]
             filtro_por_tipo = Q(pk__in=[])
 
             for modelo in modelos_com_campanha:
@@ -2450,6 +2465,12 @@ _BUSCA_MODELOS = [
     ("sessao", Sessao, "titulo"),
     ("missao", Missao, "titulo"),
     ("evento", Evento, "titulo"),
+    ("documento", Documento, "nome"),
+    ("imagem", Imagem, "nome"),
+    ("canva", Canva, "nome"),
+    ("criatura", Criatura, "nome"),
+    ("divindade", Divindade, "nome"),
+    ("raca", Raca, "nome"),
 ]
 
 
@@ -2537,6 +2558,12 @@ _SERIALIZER_POR_TIPO = {
     "sessao": SessaoSerializer,
     "missao": MissaoSerializer,
     "evento": EventoSerializer,
+    "documento": DocumentoSerializer,
+    "imagem": ImagemSerializer,
+    "canva": CanvaSerializer,
+    "criatura": CriaturaSerializer,
+    "divindade": DivindadeSerializer,
+    "raca": RacaSerializer,
 }
 
 # tipo -> (Modelo, SerializerClass, campo_titulo)
@@ -2718,3 +2745,145 @@ def duplicar_pasta(request, pasta_pk):
     )
 
     return Response(PastaSerializer(nova).data, status=status.HTTP_201_CREATED)
+
+# ---------------------------------------------------------------------------
+# Entidades de mundo novas — CRUD gerado a partir de uma fábrica única
+#
+# Os 7 tipos antigos têm uma dupla `<tipo>_lista` / `<tipo>_detalhe` escrita
+# à mão (cada uma com validações próprias). As 6 entidades novas
+# (Documento, Imagem, Canva, Criatura, Divindade, Raca) compartilham
+# EXATAMENTE o mesmo fluxo — participante lista, mestre cria/exclui,
+# `check_object_permission` no detalhe —, então repetir ~130 linhas seis
+# vezes só criaria seis lugares para o mesmo bug. A fábrica abaixo devolve
+# as três views (lista, detalhe, conexões) já decoradas, com os mesmos
+# `operation_id` que o resto da API expõe ao drf-spectacular.
+# ---------------------------------------------------------------------------
+
+def _crud_mundo(tipo, plural, modelo, serializer_cls, rotulo):
+
+    def lista(request, pk):
+        campanha, erro = _busca_campanha_do_participante(request, pk)
+
+        if erro:
+            return erro
+
+        if request.method == "GET":
+            # A ordenação vem do Meta do model (`ordem`, depois `nome`) —
+            # ver EntidadeMundo em models.py.
+            itens = _filtra_visiveis(request, campanha, modelo.objects.filter(campanha=campanha))
+
+            return Response(serializer_cls(itens, many=True).data)
+
+        erro = _exige_mestre(request, campanha)
+
+        if erro:
+            return erro
+
+        serializer = serializer_cls(
+            data=request.data, context={"campanha": campanha, "request": request}
+        )
+
+        if serializer.is_valid():
+            obj = serializer.save(campanha=campanha)
+
+            return Response(serializer_cls(obj).data, status=status.HTTP_201_CREATED)
+
+        return Response(serializer.errors, status=status.HTTP_400_BAD_REQUEST)
+
+    def detalhe(request, obj_pk):
+        try:
+            obj = modelo.objects.select_related("campanha").get(pk=obj_pk)
+
+        except modelo.DoesNotExist:
+            return Response(
+                {"erro": f"{rotulo} não encontrado(a)."},
+                status=status.HTTP_404_NOT_FOUND
+            )
+
+        check_object_permission(request, obj)
+
+        if request.method == "GET":
+            return Response(serializer_cls(obj).data)
+
+        if request.method in ("PUT", "PATCH"):
+            serializer = serializer_cls(
+                obj,
+                data=request.data,
+                partial=request.method == "PATCH",
+                context={"campanha": obj.campanha, "request": request},
+            )
+
+            if serializer.is_valid():
+                serializer.save()
+                return Response(serializer.data)
+
+            return Response(serializer.errors, status=status.HTTP_400_BAD_REQUEST)
+
+        # DELETE — só o mestre, igual aos demais recursos de mundo.
+        erro = _exige_mestre(request, obj.campanha)
+
+        if erro:
+            return erro
+
+        obj.delete()
+
+        return Response(
+            {"mensagem": f"{rotulo} removido(a) com sucesso."},
+            status=status.HTTP_204_NO_CONTENT
+        )
+
+    def conexoes(request, obj_pk):
+        return _conexoes_da_entidade_view(request, modelo, obj_pk, select_related=["campanha"])
+
+    lista.__name__ = f"{tipo}_lista"
+    detalhe.__name__ = f"{tipo}_detalhe"
+    conexoes.__name__ = f"{tipo}_conexoes"
+
+    # `permission_classes` precisa ser aplicado ANTES de `api_view` (no
+    # empilhamento de decoradores, é o de baixo) — o DRF valida essa ordem.
+    lista = api_view(["GET", "POST"])(permission_classes([IsAuthenticated])(lista))
+    lista = extend_schema(
+        methods=["GET"], operation_id=f"listar_{plural}", responses=serializer_cls(many=True)
+    )(lista)
+    lista = extend_schema(
+        methods=["POST"], operation_id=f"criar_{tipo}", request=serializer_cls, responses=serializer_cls
+    )(lista)
+
+    detalhe = api_view(["GET", "PUT", "PATCH", "DELETE"])(permission_classes([IsAuthenticated])(detalhe))
+    detalhe = extend_schema(methods=["GET"], operation_id=f"detalhar_{tipo}", responses=serializer_cls)(detalhe)
+    detalhe = extend_schema(
+        methods=["PUT"], operation_id=f"atualizar_{tipo}", request=serializer_cls, responses=serializer_cls
+    )(detalhe)
+    detalhe = extend_schema(
+        methods=["PATCH"], operation_id=f"atualizar_parcial_{tipo}", request=serializer_cls, responses=serializer_cls
+    )(detalhe)
+    detalhe = extend_schema(methods=["DELETE"], operation_id=f"remover_{tipo}", responses=None)(detalhe)
+
+    conexoes = api_view(["GET"])(permission_classes([IsAuthenticated])(conexoes))
+    conexoes = extend_schema(
+        methods=["GET"],
+        operation_id=f"listar_conexoes_{tipo}",
+        responses={200: {"type": "array", "items": {"type": "object"}}},
+    )(conexoes)
+
+    return lista, detalhe, conexoes
+
+
+documento_lista, documento_detalhe, documento_conexoes = _crud_mundo(
+    "documento", "documentos", Documento, DocumentoSerializer, "Documento"
+)
+imagem_lista, imagem_detalhe, imagem_conexoes = _crud_mundo(
+    "imagem", "imagens", Imagem, ImagemSerializer, "Imagem"
+)
+canva_lista, canva_detalhe, canva_conexoes = _crud_mundo(
+    "canva", "canvas", Canva, CanvaSerializer, "Canva"
+)
+criatura_lista, criatura_detalhe, criatura_conexoes = _crud_mundo(
+    "criatura", "criaturas", Criatura, CriaturaSerializer, "Criatura"
+)
+divindade_lista, divindade_detalhe, divindade_conexoes = _crud_mundo(
+    "divindade", "divindades", Divindade, DivindadeSerializer, "Divindade"
+)
+raca_lista, raca_detalhe, raca_conexoes = _crud_mundo(
+    "raca", "racas", Raca, RacaSerializer, "Raça"
+)

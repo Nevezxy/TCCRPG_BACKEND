@@ -17,10 +17,17 @@ from .models import (
     Pasta,
     TipoConexao,
     Conexao,
+    Documento,
+    Imagem,
+    Canva,
+    Criatura,
+    Divindade,
+    Raca,
     modelos_conectaveis,
 )
 from Personagem.models import Personagem
 from Personagem.serializers import CloudinaryUrlSerializerMixin  # ajuste o import conforme seu projeto
+from Sistema.serializers import SincronizaSistemasMixin
 
 
 # ---------------------------------------------------------------------------
@@ -119,7 +126,7 @@ class CampanhaPersonagemResumoSerializer(serializers.Serializer):
         return obj.usuario.username if getattr(obj, "usuario", None) else None
 
 
-class CampanhaSerializer(CloudinaryUrlSerializerMixin, serializers.ModelSerializer):
+class CampanhaSerializer(SincronizaSistemasMixin, CloudinaryUrlSerializerMixin, serializers.ModelSerializer):
 
     media_fields = ["banner"]
 
@@ -158,7 +165,11 @@ class CampanhaSerializer(CloudinaryUrlSerializerMixin, serializers.ModelSerializ
 # Campanha — reaproveitada aqui para não divergir.
 # ---------------------------------------------------------------------------
 
-_MODELOS_NOTAVEIS = [Campanha, NPC, Local, Organizacao, Mapa, Sessao, Missao, Evento, Personagem]
+_MODELOS_NOTAVEIS = [
+    Campanha, NPC, Local, Organizacao, Mapa, Sessao, Missao, Evento,
+    Documento, Imagem, Canva, Criatura, Divindade, Raca,
+    Personagem,
+]
 
 
 def campanhas_do_objeto_notavel(objeto):
@@ -875,3 +886,146 @@ class NotaSerializer(serializers.ModelSerializer):
                     )
 
         return attrs
+
+
+# ---------------------------------------------------------------------------
+# Entidades de mundo novas (Documento, Imagem, Canva, Criatura, Divindade,
+# Raca) — todas herdam de `EntidadeMundo` (models.py), então o serializer
+# também é um só: o que muda entre elas é o `model` e quais campos são
+# imagem (`media_fields`).
+#
+# Os serializers dos 7 tipos antigos continuam escritos um a um acima, de
+# propósito: cada um tem validações e campos calculados próprios
+# (`conexoes_estruturadas`, líder de Organizacao, número único de Sessao...),
+# e reescrevê-los em cima desta base não removeria nada disso.
+# ---------------------------------------------------------------------------
+
+class ValidaLocalDaCampanhaMixin:
+    """
+    Mesma ideia de `ValidaPastaDaCampanhaMixin`, para o campo `local`:
+    impede ligar uma entidade a um Local de OUTRA campanha (mesma checagem
+    que Mapa/Missao já fazem, extraída para não repetir a terceira vez).
+    """
+
+    def validate_local(self, local):
+        campanha = self.instance.campanha if self.instance else self.context.get("campanha")
+
+        if local and campanha and local.campanha_id != campanha.id:
+            raise serializers.ValidationError(
+                "Este local não pertence à mesma campanha desta entidade."
+            )
+
+        return local
+
+
+class EntidadeMundoSerializer(
+    ValidaPastaDaCampanhaMixin,
+    RestringeCamposDeMestreMixin,
+    CloudinaryUrlSerializerMixin,
+    serializers.ModelSerializer,
+):
+
+    conexoes = serializers.SerializerMethodField()
+
+    class Meta:
+        fields = "__all__"
+        # `campanha` vem sempre da URL, nunca do corpo — mesmo racional de
+        # NPC.campanha (evita "mover" a entidade para outra campanha).
+        read_only_fields = ("campanha", "criado_em", "atualizado_em")
+
+    def get_conexoes(self, obj):
+        return conexoes_de_entidade(obj)
+
+
+class DocumentoSerializer(ValidaLocalDaCampanhaMixin, EntidadeMundoSerializer):
+
+    media_fields = ["imagem"]
+
+    class Meta(EntidadeMundoSerializer.Meta):
+        model = Documento
+
+
+class ImagemSerializer(EntidadeMundoSerializer):
+
+    media_fields = ["imagem"]
+
+    class Meta(EntidadeMundoSerializer.Meta):
+        model = Imagem
+
+    def validate_nome(self, nome):
+        """
+        O nome é a CHAVE das referências `![[Nome]]` no Markdown (ver
+        docstring de `Imagem`), então precisa ser único dentro da campanha.
+        A UniqueConstraint do model garante isso no banco; aqui devolvemos
+        um erro legível em vez de deixar vazar um IntegrityError.
+        """
+        campanha = self.instance.campanha if self.instance else self.context.get("campanha")
+        nome_limpo = (nome or "").strip()
+
+        if campanha and nome_limpo:
+            existentes = Imagem.objects.filter(campanha=campanha, nome__iexact=nome_limpo)
+
+            if self.instance:
+                existentes = existentes.exclude(pk=self.instance.pk)
+
+            if existentes.exists():
+                raise serializers.ValidationError(
+                    "Já existe uma imagem com este nome nesta campanha — o nome é usado "
+                    "para referenciá-la no Markdown com ![[Nome]], então precisa ser único."
+                )
+
+        return nome_limpo
+
+
+class CanvaSerializer(EntidadeMundoSerializer):
+
+    media_fields = ["imagem"]
+
+    class Meta(EntidadeMundoSerializer.Meta):
+        model = Canva
+
+    def validate_dados(self, dados):
+        """
+        `dados` é o estado inteiro do quadro (ver docstring de `Canva`). O
+        formato interno é responsabilidade do editor no frontend — aqui só
+        garantimos que é um OBJETO JSON e que a lista de objetos é uma
+        lista, para que um payload malformado não seja gravado e volte
+        quebrando o editor na próxima abertura.
+        """
+        if dados in (None, ""):
+            return {}
+
+        if not isinstance(dados, dict):
+            raise serializers.ValidationError("O estado do canvas precisa ser um objeto JSON.")
+
+        objetos = dados.get("objetos")
+
+        if objetos is not None and not isinstance(objetos, list):
+            raise serializers.ValidationError("`objetos` precisa ser uma lista.")
+
+        return dados
+
+
+class CriaturaSerializer(ValidaLocalDaCampanhaMixin, EntidadeMundoSerializer):
+
+    media_fields = ["foto"]
+
+    class Meta(EntidadeMundoSerializer.Meta):
+        model = Criatura
+
+
+class DivindadeSerializer(EntidadeMundoSerializer):
+
+    # Duas imagens independentes — o retrato e o símbolo sagrado.
+    media_fields = ["foto", "simbolo"]
+
+    class Meta(EntidadeMundoSerializer.Meta):
+        model = Divindade
+
+
+class RacaSerializer(EntidadeMundoSerializer):
+
+    media_fields = ["imagem"]
+
+    class Meta(EntidadeMundoSerializer.Meta):
+        model = Raca

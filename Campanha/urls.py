@@ -215,6 +215,125 @@ urlpatterns = [
     ),
 
 
+    # ------------------------------------------------------------------
+    # Entidades de mundo novas — mesmo padrão dos 7 tipos acima (lista
+    # aninhada na campanha, detalhe achatado). As views são geradas pela
+    # fábrica `_crud_mundo` em views.py, não escritas uma a uma.
+    # ------------------------------------------------------------------
+    # Documentos
+    path(
+        "<int:pk>/documentos/",
+        views.documento_lista,
+        name="documento_lista"
+    ),
+
+    path(
+        "documentos/<int:obj_pk>/",
+        views.documento_detalhe,
+        name="documento_detalhe"
+    ),
+
+    path(
+        "documentos/<int:obj_pk>/conexoes/",
+        views.documento_conexoes,
+        name="documento_conexoes"
+    ),
+
+    # Imagens
+    path(
+        "<int:pk>/imagens/",
+        views.imagem_lista,
+        name="imagem_lista"
+    ),
+
+    path(
+        "imagens/<int:obj_pk>/",
+        views.imagem_detalhe,
+        name="imagem_detalhe"
+    ),
+
+    path(
+        "imagens/<int:obj_pk>/conexoes/",
+        views.imagem_conexoes,
+        name="imagem_conexoes"
+    ),
+
+    # Canvas
+    path(
+        "<int:pk>/canvas/",
+        views.canva_lista,
+        name="canva_lista"
+    ),
+
+    path(
+        "canvas/<int:obj_pk>/",
+        views.canva_detalhe,
+        name="canva_detalhe"
+    ),
+
+    path(
+        "canvas/<int:obj_pk>/conexoes/",
+        views.canva_conexoes,
+        name="canva_conexoes"
+    ),
+
+    # Criaturas
+    path(
+        "<int:pk>/criaturas/",
+        views.criatura_lista,
+        name="criatura_lista"
+    ),
+
+    path(
+        "criaturas/<int:obj_pk>/",
+        views.criatura_detalhe,
+        name="criatura_detalhe"
+    ),
+
+    path(
+        "criaturas/<int:obj_pk>/conexoes/",
+        views.criatura_conexoes,
+        name="criatura_conexoes"
+    ),
+
+    # Divindades
+    path(
+        "<int:pk>/divindades/",
+        views.divindade_lista,
+        name="divindade_lista"
+    ),
+
+    path(
+        "divindades/<int:obj_pk>/",
+        views.divindade_detalhe,
+        name="divindade_detalhe"
+    ),
+
+    path(
+        "divindades/<int:obj_pk>/conexoes/",
+        views.divindade_conexoes,
+        name="divindade_conexoes"
+    ),
+
+    # Raças
+    path(
+        "<int:pk>/racas/",
+        views.raca_lista,
+        name="raca_lista"
+    ),
+
+    path(
+        "racas/<int:obj_pk>/",
+        views.raca_detalhe,
+        name="raca_detalhe"
+    ),
+
+    path(
+        "racas/<int:obj_pk>/conexoes/",
+        views.raca_conexoes,
+        name="raca_conexoes"
+    ),
+
     # Pastas — árvore de organização estilo Obsidian (seção 3)
     path(
         "<int:pk>/pastas/",

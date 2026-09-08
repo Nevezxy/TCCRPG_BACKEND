@@ -14,6 +14,12 @@ from .models import (
     Pasta,
     TipoConexao,
     Conexao,
+    Documento,
+    Imagem,
+    Canva,
+    Criatura,
+    Divindade,
+    Raca,
 )
 
 
@@ -39,7 +45,7 @@ class CampanhaAdmin(admin.ModelAdmin):
     list_filter = ("criado_em",)
     search_fields = ("nome", "codigo", "mestre__username")
     autocomplete_fields = ["mestre"]
-    filter_horizontal = ("jogadores", "personagens")
+    filter_horizontal = ("jogadores", "personagens", "sistemas")
     readonly_fields = ("codigo", "criado_em", "atualizado_em")
 
     @admin.display(description="Jogadores")
@@ -217,3 +223,55 @@ class NotaAdmin(admin.ModelAdmin):
     autocomplete_fields = ["usuario"]
     raw_id_fields = ["content_type", "personagem"]
     readonly_fields = ("criado_em", "atualizado_em")
+
+
+# ---------------------------------------------------------------------------
+# Entidades de mundo novas — todas herdam de `EntidadeMundo`, então o admin
+# também é o mesmo: a base abaixo cobre os campos comuns e cada registro só
+# acrescenta o que é próprio do tipo.
+# ---------------------------------------------------------------------------
+
+class EntidadeMundoAdmin(admin.ModelAdmin):
+    list_display = (
+        "nome", "campanha", "pasta", "ordem",
+        "visivel_para_jogadores", "editavel_para_jogadores", "atualizado_em",
+    )
+    list_filter = ("campanha", "visivel_para_jogadores", "editavel_para_jogadores")
+    search_fields = ("nome", "campanha__nome")
+    autocomplete_fields = ["campanha", "pasta"]
+    readonly_fields = ("criado_em", "atualizado_em")
+    inlines = [NotaInline]
+
+
+@admin.register(Documento)
+class DocumentoAdmin(EntidadeMundoAdmin):
+    list_display = EntidadeMundoAdmin.list_display + ("tipo", "autor")
+    autocomplete_fields = ["campanha", "pasta", "local"]
+
+
+@admin.register(Imagem)
+class ImagemAdmin(EntidadeMundoAdmin):
+    list_display = EntidadeMundoAdmin.list_display + ("legenda",)
+
+
+@admin.register(Canva)
+class CanvaAdmin(EntidadeMundoAdmin):
+    pass
+
+
+@admin.register(Criatura)
+class CriaturaAdmin(EntidadeMundoAdmin):
+    list_display = EntidadeMundoAdmin.list_display + ("tipo", "nivel", "tamanho")
+    list_filter = EntidadeMundoAdmin.list_filter + ("tamanho", "comportamento")
+    autocomplete_fields = ["campanha", "pasta", "local"]
+
+
+@admin.register(Divindade)
+class DivindadeAdmin(EntidadeMundoAdmin):
+    list_display = EntidadeMundoAdmin.list_display + ("dominio", "categoria")
+
+
+@admin.register(Raca)
+class RacaAdmin(EntidadeMundoAdmin):
+    list_display = EntidadeMundoAdmin.list_display + ("tipo", "tamanho")
+    list_filter = EntidadeMundoAdmin.list_filter + ("tamanho",)
