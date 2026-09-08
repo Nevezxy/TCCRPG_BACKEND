@@ -234,6 +234,12 @@ urlpatterns = [
         name="pasta_mover"
     ),
 
+    path(
+        "pastas/<int:pasta_pk>/duplicar/",
+        views.duplicar_pasta,
+        name="duplicar_pasta"
+    ),
+
 
     # Tipos de conexão — vocabulário compartilhado (não aninhado em
     # campanha; ver TipoConexao em models.py)
@@ -272,6 +278,14 @@ urlpatterns = [
         "<int:pk>/busca/",
         views.busca_campanha,
         name="busca_campanha"
+    ),
+
+
+    # "Fazer uma cópia" de uma entidade de mundo (body: { tipo, id }).
+    path(
+        "<int:pk>/entidades/duplicar/",
+        views.duplicar_entidade,
+        name="duplicar_entidade"
     ),
 
 

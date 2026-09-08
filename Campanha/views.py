@@ -1,8 +1,11 @@
 from drf_spectacular.utils import extend_schema
 from rest_framework import status
 from rest_framework.decorators import api_view, permission_classes
+from rest_framework.exceptions import ValidationError
 from rest_framework.permissions import IsAuthenticated
 from rest_framework.response import Response
+
+from cloudinary.models import CloudinaryField
 
 from Personagem.models import Personagem
 from Personagem.serializers import PersonagemSerializer
@@ -2516,3 +2519,202 @@ def busca_campanha(request, pk):
         })
 
     return Response(resultados)
+
+
+# ---------------------------------------------------------------------------
+# "Fazer uma cópia" — duplicação de entidade de mundo e de pasta (com todo o
+# seu conteúdo). Reaproveita `_BUSCA_MODELOS` (tipo -> Modelo -> campo-título)
+# e os serializers já existentes (toda a validação de mesma-campanha, número
+# de sessão único, etc. continua valendo, pois a criação passa pelo
+# serializer). Só o mestre pode duplicar (mesma regra de criar).
+# ---------------------------------------------------------------------------
+
+_SERIALIZER_POR_TIPO = {
+    "npc": NPCSerializer,
+    "local": LocalSerializer,
+    "organizacao": OrganizacaoSerializer,
+    "mapa": MapaSerializer,
+    "sessao": SessaoSerializer,
+    "missao": MissaoSerializer,
+    "evento": EventoSerializer,
+}
+
+# tipo -> (Modelo, SerializerClass, campo_titulo)
+_DUP = {
+    tipo: (modelo, _SERIALIZER_POR_TIPO[tipo], campo_titulo)
+    for tipo, modelo, campo_titulo in _BUSCA_MODELOS
+}
+
+
+def _nome_copia_unico(modelo, campanha, campo, base, pasta_pai=None):
+    """
+    "<base> (cópia)", com sufixo numérico se já existir — respeita os
+    UniqueConstraint de Organizacao (campanha, nome) e Pasta (campanha,
+    pasta_pai, nome). Inofensivo para os tipos sem restrição de nome.
+    """
+    base = (base or "").strip() or "Sem nome"
+    candidato = f"{base} (cópia)"
+    n = 2
+    while True:
+        filtro = {"campanha": campanha, campo: candidato}
+        if modelo._meta.model_name == "pasta":
+            filtro["pasta_pai"] = pasta_pai
+        if not modelo.objects.filter(**filtro).exists():
+            return candidato
+        candidato = f"{base} (cópia {n})"
+        n += 1
+
+
+def _dados_copia(origem):
+    """
+    Campos escalares/relacionais concretos de `origem` prontos para
+    recriar o objeto via serializer. Ignora pk, campanha (vem do save),
+    timestamps, campos não-editáveis e imagens (CloudinaryField) — a cópia
+    nasce sem imagem, o mestre reanexa se quiser. Inclui M2M como lista de
+    ids (ex.: Evento.locais / Evento.organizacoes).
+    """
+    ignorar = {"id", "campanha", "criado_em", "atualizado_em"}
+    dados = {}
+    for f in origem._meta.fields:
+        if f.name in ignorar or f.auto_created or not f.editable:
+            continue
+        if isinstance(f, CloudinaryField):
+            continue
+        dados[f.name] = getattr(origem, f.attname)  # FK -> _id, demais -> valor
+    for f in origem._meta.many_to_many:
+        dados[f.name] = list(getattr(origem, f.name).values_list("pk", flat=True))
+    return dados
+
+
+def _duplica_entidade(campanha, tipo, origem, pasta_id="__keep__"):
+    modelo, serializer_cls, campo_titulo = _DUP[tipo]
+
+    dados = _dados_copia(origem)
+    dados[campo_titulo] = _nome_copia_unico(
+        modelo, campanha, campo_titulo, getattr(origem, campo_titulo)
+    )
+
+    if pasta_id != "__keep__":
+        dados["pasta"] = pasta_id
+
+    # Sessao.numero é único por campanha — a cópia recebe o próximo número.
+    if tipo == "sessao":
+        ultimo = modelo.objects.filter(campanha=campanha).order_by("-numero").first()
+        dados["numero"] = (ultimo.numero if ultimo else 0) + 1
+
+    serializer = serializer_cls(data=dados, context={"campanha": campanha})
+    serializer.is_valid(raise_exception=True)
+    return serializer.save(campanha=campanha)
+
+
+@extend_schema(
+    methods=["POST"],
+    operation_id="duplicar_entidade",
+    request={
+        "application/json": {
+            "type": "object",
+            "properties": {
+                "tipo": {"type": "string"},
+                "id": {"type": "integer"},
+            },
+            "required": ["tipo", "id"],
+        }
+    },
+    responses=None,
+)
+@api_view(["POST"])
+@permission_classes([IsAuthenticated])
+def duplicar_entidade(request, pk):
+    campanha, erro = _busca_campanha_do_participante(request, pk)
+
+    if erro:
+        return erro
+
+    erro = _exige_mestre(request, campanha)
+
+    if erro:
+        return erro
+
+    tipo = request.data.get("tipo")
+    obj_id = request.data.get("id")
+
+    if tipo not in _DUP:
+        return Response(
+            {"erro": "Tipo de entidade inválido."},
+            status=status.HTTP_400_BAD_REQUEST,
+        )
+
+    modelo, serializer_cls, _ = _DUP[tipo]
+
+    try:
+        origem = modelo.objects.get(pk=obj_id, campanha=campanha)
+    except (modelo.DoesNotExist, ValueError, TypeError):
+        return Response(
+            {"erro": "Entidade não encontrada nesta campanha."},
+            status=status.HTTP_404_NOT_FOUND,
+        )
+
+    try:
+        novo = _duplica_entidade(campanha, tipo, origem)
+    except ValidationError as exc:
+        return Response(exc.detail, status=status.HTTP_400_BAD_REQUEST)
+
+    return Response(serializer_cls(novo).data, status=status.HTTP_201_CREATED)
+
+
+def _duplica_pasta_recursivo(campanha, origem, novo_pai_id, primeiro=False):
+    pai = Pasta.objects.filter(pk=novo_pai_id).first() if novo_pai_id else None
+
+    nome = (
+        _nome_copia_unico(Pasta, campanha, "nome", origem.nome, pasta_pai=pai)
+        if primeiro
+        else origem.nome
+    )
+
+    nova = Pasta.objects.create(
+        campanha=campanha,
+        nome=nome,
+        pasta_pai=pai,
+        icone=origem.icone,
+        cor=origem.cor,
+        ordem=origem.ordem,
+        visivel_para_jogadores=origem.visivel_para_jogadores,
+        editavel_para_jogadores=origem.editavel_para_jogadores,
+    )
+
+    for tipo, (modelo, _serializer, _campo) in _DUP.items():
+        for ent in modelo.objects.filter(campanha=campanha, pasta=origem):
+            try:
+                _duplica_entidade(campanha, tipo, ent, pasta_id=nova.id)
+            except ValidationError:
+                # Uma entidade problemática não deve abortar a cópia inteira.
+                pass
+
+    for sub in origem.subpastas.all():
+        _duplica_pasta_recursivo(campanha, sub, nova.id)
+
+    return nova
+
+
+@extend_schema(methods=["POST"], operation_id="duplicar_pasta", responses=PastaSerializer)
+@api_view(["POST"])
+@permission_classes([IsAuthenticated])
+def duplicar_pasta(request, pasta_pk):
+    try:
+        pasta = Pasta.objects.select_related("campanha").get(pk=pasta_pk)
+    except Pasta.DoesNotExist:
+        return Response(
+            {"erro": "Pasta não encontrada."},
+            status=status.HTTP_404_NOT_FOUND,
+        )
+
+    erro = _exige_mestre(request, pasta.campanha)
+
+    if erro:
+        return erro
+
+    nova = _duplica_pasta_recursivo(
+        pasta.campanha, pasta, pasta.pasta_pai_id, primeiro=True
+    )
+
+    return Response(PastaSerializer(nova).data, status=status.HTTP_201_CREATED)

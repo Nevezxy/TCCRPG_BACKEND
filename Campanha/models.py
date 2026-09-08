@@ -79,6 +79,9 @@ class NPC(models.Model):
 
     localizacao = models.ForeignKey('Local', on_delete=models.SET_NULL, null=True, blank=True, related_name="npcs_localizados")
     
+    icone = models.CharField(max_length=100, blank=True, help_text="Nome do ícone lucide (ex.: 'user', 'map-pin').")
+    cor = models.CharField(max_length=7, blank=True, help_text="Cor hexadecimal (ex.: '#FF0000').")
+
     ordem = models.PositiveIntegerField(default=0)
     
     visivel_para_jogadores = models.BooleanField(default=True)
@@ -116,6 +119,9 @@ class Local(models.Model):
     # Ver nota equivalente em NPC.conteudo.
     conteudo = models.TextField(blank=True)
     
+    icone = models.CharField(max_length=100, blank=True, help_text="Nome do ícone lucide (ex.: 'user', 'map-pin').")
+    cor = models.CharField(max_length=7, blank=True, help_text="Cor hexadecimal (ex.: '#FF0000').")
+
     ordem = models.PositiveIntegerField(default=0)
     
     visivel_para_jogadores = models.BooleanField(default=True)
@@ -178,6 +184,9 @@ class Organizacao(models.Model):
     # Ver nota equivalente em NPC.conteudo.
     conteudo = models.TextField(blank=True)
     
+    icone = models.CharField(max_length=100, blank=True, help_text="Nome do ícone lucide (ex.: 'user', 'map-pin').")
+    cor = models.CharField(max_length=7, blank=True, help_text="Cor hexadecimal (ex.: '#FF0000').")
+
     ordem = models.PositiveIntegerField(default=0)
     
     visivel_para_jogadores = models.BooleanField(default=True)
@@ -239,6 +248,9 @@ class Mapa(models.Model):
     # Ver nota equivalente em NPC.conteudo.
     conteudo = models.TextField(blank=True)
     
+    icone = models.CharField(max_length=100, blank=True, help_text="Nome do ícone lucide (ex.: 'user', 'map-pin').")
+    cor = models.CharField(max_length=7, blank=True, help_text="Cor hexadecimal (ex.: '#FF0000').")
+
     ordem = models.PositiveIntegerField(default=0)
     
     visivel_para_jogadores = models.BooleanField(default=True)
@@ -265,6 +277,9 @@ class Sessao(models.Model):
     # Ver nota equivalente em NPC.conteudo.
     conteudo = models.TextField(blank=True)
     
+    icone = models.CharField(max_length=100, blank=True, help_text="Nome do ícone lucide (ex.: 'user', 'map-pin').")
+    cor = models.CharField(max_length=7, blank=True, help_text="Cor hexadecimal (ex.: '#FF0000').")
+
     ordem = models.PositiveIntegerField(default=0)
     
     visivel_para_jogadores = models.BooleanField(default=True)
@@ -296,6 +311,9 @@ class Missao(models.Model):
     # Ver nota equivalente em NPC.conteudo.
     conteudo = models.TextField(blank=True)
     
+    icone = models.CharField(max_length=100, blank=True, help_text="Nome do ícone lucide (ex.: 'user', 'map-pin').")
+    cor = models.CharField(max_length=7, blank=True, help_text="Cor hexadecimal (ex.: '#FF0000').")
+
     ordem = models.PositiveIntegerField(default=0)
     
     visivel_para_jogadores = models.BooleanField(default=True)
@@ -323,6 +341,9 @@ class Evento(models.Model):
     # Ver nota equivalente em NPC.conteudo.
     conteudo = models.TextField(blank=True)
     
+    icone = models.CharField(max_length=100, blank=True, help_text="Nome do ícone lucide (ex.: 'user', 'map-pin').")
+    cor = models.CharField(max_length=7, blank=True, help_text="Cor hexadecimal (ex.: '#FF0000').")
+
     ordem = models.PositiveIntegerField(default=0)
     
     visivel_para_jogadores = models.BooleanField(default=True)
