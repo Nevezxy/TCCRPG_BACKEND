@@ -83,6 +83,7 @@ INSTALLED_APPS = [
     'Usuario',
     'Campanha',
     'Sistema',
+    'Midia',
 ]
 
 MIDDLEWARE = [
@@ -233,6 +234,25 @@ cloudinary.config(
     api_secret=os.getenv("CLOUDINARY_API_SECRET"),
     secure=True,
 )
+
+# Imagens (app Midia): upload padronizado, enquadramento e limpeza do
+# Cloudinary. Ver Midia/services.py para o significado de cada chave.
+#
+# EXCLUSAO_ATIVA é o interruptor que de fato APAGA arquivos no Cloudinary
+# quando uma imagem é trocada/removida ou o objeto é excluído. Padrão:
+# ligado em produção, DESLIGADO com DEBUG — um banco local (cópia do de
+# produção ou não) aponta para a MESMA conta do Cloudinary, e trocar uma foto
+# em desenvolvimento não pode apagar um arquivo que a produção ainda usa.
+# Desligado, as exclusões só ficam na fila (`limpar_imagens --pendentes`).
+IMAGENS = {
+    "PASTA_RAIZ": os.getenv("CLOUDINARY_PASTA_RAIZ", "tccrpg"),
+    "EXCLUSAO_ATIVA": os.getenv("IMAGENS_EXCLUSAO_ATIVA", "False" if DEBUG else "True") == "True",
+    "PROCESSAMENTO_SINCRONO": False,
+    "TAMANHO_MAXIMO_MB": 15,
+    "LADO_MAXIMO": 4096,
+    "FORMATOS": ["jpg", "jpeg", "png", "webp", "gif", "avif", "heic", "heif"],
+    "IDADE_MINIMA_ORFAO_HORAS": 24,
+}
 
 SPECTACULAR_SETTINGS = {
     "TITLE": "API RPG",

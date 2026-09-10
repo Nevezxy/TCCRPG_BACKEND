@@ -27,6 +27,7 @@ from .models import (
 )
 from Personagem.models import Personagem
 from Personagem.serializers import CloudinaryUrlSerializerMixin  # ajuste o import conforme seu projeto
+from Midia.serializers import ajustes_do_objeto
 from Sistema.serializers import SincronizaSistemasMixin
 
 
@@ -108,6 +109,9 @@ class CampanhaPersonagemResumoSerializer(serializers.Serializer):
     """
     id = serializers.IntegerField()
     foto = serializers.SerializerMethodField()
+    # Enquadramento da foto (ver app Midia) — o avatar do card usa o mesmo
+    # recorte que o jogador escolheu na ficha.
+    foto_ajuste = serializers.SerializerMethodField()
     nome = serializers.CharField()
     nivel = serializers.IntegerField()
     classe1 = serializers.CharField(allow_null=True)
@@ -121,6 +125,11 @@ class CampanhaPersonagemResumoSerializer(serializers.Serializer):
             return obj.foto.url
         except Exception:
             return str(obj.foto)
+
+    def get_foto_ajuste(self, obj):
+        if not obj.foto:
+            return None
+        return ajustes_do_objeto(self, obj, ["foto"]).get("foto")
 
     def get_usuario_username(self, obj):
         return obj.usuario.username if getattr(obj, "usuario", None) else None

@@ -2,29 +2,11 @@ from rest_framework import serializers
 from Sistema.serializers import SincronizaSistemasMixin
 from drf_spectacular.utils import extend_schema_field
 
+# O mixin mora no app Midia (upload seguro + enquadramento + limpeza do
+# Cloudinary); reexportado aqui porque o Campanha já o importa deste módulo.
+from Midia.serializers import CloudinaryUrlSerializerMixin  # noqa: F401
+
 from .models import *
-
-
-class CloudinaryUrlSerializerMixin:
-    """
-    Converte os CloudinaryField em URL completa na resposta,
-    mas mantém os campos graváveis.
-    """
-
-    media_fields = []
-
-    def to_representation(self, instance):
-        data = super().to_representation(instance)
-
-        for field in self.media_fields:
-            value = getattr(instance, field)
-
-            if value:
-                data[field] = value.url
-            else:
-                data[field] = None
-
-        return data
 
 
 class PersonagemSerializer(SincronizaSistemasMixin, CloudinaryUrlSerializerMixin, serializers.ModelSerializer):
