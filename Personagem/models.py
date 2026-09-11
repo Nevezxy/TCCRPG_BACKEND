@@ -1,4 +1,5 @@
 from django.db import models
+from django.db.models import F
 from cloudinary.models import CloudinaryField
 from django.contrib.contenttypes.fields import GenericForeignKey
 from django.contrib.contenttypes.models import ContentType
@@ -6,7 +7,44 @@ from django.conf import settings
 
 from Sistema.models import GrupoArmas, Modificacao, Sistema
 
-class Personagem(models.Model):
+
+class Versionado(models.Model):
+    """
+    Contador de revisão da linha, usado pela sincronização em tempo real do
+    Escudo do Mestre (ver `Campanha/escudo.py`): cada evento leva a `versao`
+    da linha, e o cliente descarta qualquer evento com versão menor ou igual
+    à que já tem. É o que impede uma mensagem atrasada (duas gravações quase
+    simultâneas publicadas por threads/processos diferentes) de sobrescrever
+    na tela um valor mais novo com um mais antigo.
+
+    O incremento é feito PELO BANCO (`F("versao") + 1` dentro do próprio
+    UPDATE), não em Python: duas gravações concorrentes da mesma linha são
+    serializadas pelo lock da linha e recebem versões distintas, na ordem em
+    que de fato foram gravadas. No Django 6 + PostgreSQL o valor resultante
+    volta pelo `RETURNING` do mesmo UPDATE — nenhuma consulta extra.
+
+    `db_default` (e não só `default`) de propósito: se o banco for
+    compartilhado com uma versão antiga do código que ainda não conhece este
+    campo, os INSERTs dela continuam válidos.
+    """
+
+    versao = models.PositiveBigIntegerField(default=1, db_default=1, editable=False)
+
+    class Meta:
+        abstract = True
+
+    def save(self, *args, **kwargs):
+        if not self._state.adding:
+            self.versao = F("versao") + 1
+            update_fields = kwargs.get("update_fields")
+            if update_fields is not None:
+                # Sem isto, um `save(update_fields=[...])` deixaria a expressão
+                # F() presa na instância (não seria enviada nem resolvida).
+                kwargs["update_fields"] = {*update_fields, "versao"}
+        super().save(*args, **kwargs)
+
+
+class Personagem(Versionado):
     usuario = models.ForeignKey(settings.AUTH_USER_MODEL, on_delete=models.CASCADE, related_name='personagens')
     foto = CloudinaryField('Foto', blank=True)
     banner = CloudinaryField('Banner', blank=True)
@@ -46,7 +84,7 @@ class Personagem(models.Model):
     def __str__(self):
         return f"{self.nome}"
     
-class Atributo(models.Model):
+class Atributo(Versionado):
     personagem = models.ForeignKey(Personagem, on_delete=models.CASCADE, related_name='atributos')
     cor = models.CharField(max_length=7, default="#FF0000")
     icone = models.CharField(max_length=100, blank=True)
@@ -56,7 +94,7 @@ class Atributo(models.Model):
     def __str__(self):
         return f"{self.nome} ({self.personagem.nome})"
     
-class Status(models.Model):
+class Status(Versionado):
     personagem = models.ForeignKey(Personagem, on_delete=models.CASCADE, related_name='status')
     nome = models.CharField(max_length=100)
     barra = models.BooleanField(default=False)
@@ -72,7 +110,7 @@ class Status(models.Model):
     def __str__(self):
         return f"{self.nome} ({self.personagem.nome})"
     
-class Defesa(models.Model):
+class Defesa(Versionado):
     personagem = models.ForeignKey(Personagem, on_delete=models.CASCADE, related_name='defesas')
     icone = models.CharField(max_length=100, blank=True)
     nome = models.CharField(max_length=100)
@@ -162,7 +200,7 @@ class Aprimoramento(models.Model):
     descricao = models.TextField(blank=True)
     custo = models.IntegerField(default=0)
     
-class Bonus(models.Model):
+class Bonus(Versionado):
     content_type = models.ForeignKey(ContentType, on_delete=models.CASCADE)
     object_id = models.PositiveIntegerField()
     alvo = GenericForeignKey("content_type", "object_id")

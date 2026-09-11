@@ -3,4 +3,8 @@ services:
     name: minha-api-django
     runtime: python
     buildCommand: "./build.sh"
-    startCommand: "gunicorn app.wsgi:application"
+    # ASGI (Daphne) em vez de Gunicorn/WSGI: o mesmo processo atende a API
+    # REST e o WebSocket do Escudo do Mestre. Um único processo usa o channel
+    # layer em memória; para escalar para mais de um processo/instância,
+    # defina REDIS_URL (ver CHANNEL_LAYERS em app/settings.py).
+    startCommand: "daphne -b 0.0.0.0 -p $PORT app.asgi:application"

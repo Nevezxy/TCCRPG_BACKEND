@@ -34,6 +34,7 @@ from .models import (
     Raca,
 )
 from Usuario.permissions import check_object_permission, pode_criar_ou_excluir, usuario_pode_ver_objeto
+from .escudo import montar_snapshot
 from .serializers import (
     CampanhaSerializer,
     NPCSerializer,
@@ -2540,6 +2541,30 @@ def busca_campanha(request, pk):
         })
 
     return Response(resultados)
+
+
+@extend_schema(
+    methods=["GET"],
+    operation_id="escudo_campanha",
+    responses=None,
+)
+@api_view(["GET"])
+@permission_classes([IsAuthenticated])
+def escudo_campanha(request, pk):
+    """
+    Carga completa do Escudo do Mestre numa requisição só (ver
+    `escudo.montar_snapshot`). Depois dela, o cliente só recebe eventos
+    incrementais pelo WebSocket — esta rota volta a ser chamada apenas numa
+    reconexão, para cobrir o que possa ter mudado enquanto estava offline.
+    Mesma regra de acesso de antes (qualquer participante da campanha: o
+    Escudo sempre foi visível para a mesa toda, não só para o mestre).
+    """
+    campanha, erro = _busca_campanha_do_participante(request, pk)
+
+    if erro:
+        return erro
+
+    return Response(montar_snapshot(campanha))
 
 
 # ---------------------------------------------------------------------------

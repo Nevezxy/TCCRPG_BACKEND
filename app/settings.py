@@ -57,6 +57,10 @@ ALLOWED_HOSTS = [
 # Application definition
 
 INSTALLED_APPS = [
+    # Precisa ser o PRIMEIRO: com ele, `manage.py runserver` passa a servir
+    # ASGI (HTTP + WebSocket) em vez de só WSGI — o fluxo de desenvolvimento
+    # continua o mesmo comando de sempre.
+    'daphne',
     'django.contrib.admin',
     'django.contrib.auth',
     'django.contrib.contenttypes',
@@ -66,6 +70,7 @@ INSTALLED_APPS = [
     
     'rest_framework',
     'corsheaders',
+    'channels',
     "cloudinary",
     "cloudinary_storage",
     "drf_spectacular",
@@ -146,6 +151,27 @@ TEMPLATES = [
 ]
 
 WSGI_APPLICATION = 'app.wsgi.application'
+
+# Sincronização em tempo real do Escudo do Mestre (ver Campanha/escudo.py).
+ASGI_APPLICATION = 'app.asgi.application'
+
+# O channel layer é o "correio" entre quem grava (qualquer view, em qualquer
+# processo) e quem está conectado por WebSocket. Em memória só funciona com
+# UM processo — é o caso do `runserver` e de um deploy com um único worker
+# Daphne. Com mais de um processo/instância, defina REDIS_URL: sem um
+# broker compartilhado, a gravação feita num processo não chegaria às
+# conexões abertas em outro.
+REDIS_URL = os.getenv("REDIS_URL")
+
+if REDIS_URL:
+    CHANNEL_LAYERS = {
+        "default": {
+            "BACKEND": "channels_redis.core.RedisChannelLayer",
+            "CONFIG": {"hosts": [REDIS_URL]},
+        }
+    }
+else:
+    CHANNEL_LAYERS = {"default": {"BACKEND": "channels.layers.InMemoryChannelLayer"}}
 
 
 # Database

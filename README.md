@@ -37,7 +37,7 @@ customizável por "Sistema" de jogo (D&D, sistema próprio, etc.).
 - **Cloudinary** (`cloudinary`, `django-cloudinary-storage`) — armazenamento de imagens/mídia
 - **django-cors-headers** — CORS
 - **WhiteNoise** — servir arquivos estáticos em produção
-- **Gunicorn** — servidor WSGI de produção
+- **Django Channels + Daphne** — servidor ASGI de produção (API REST + WebSocket do Escudo do Mestre no mesmo processo)
 - **python-dotenv** — carregamento de variáveis de ambiente a partir de `.env` em desenvolvimento
 
 ## Arquitetura
@@ -135,6 +135,7 @@ ver `app/settings.py`). As variáveis usadas no código são:
 | `CLOUDINARY_CLOUD_NAME` | `app/settings.py` | Sim (se for usar upload de mídia) | Nome do cloud Cloudinary. |
 | `CLOUDINARY_API_KEY` | `app/settings.py` | Sim | Chave de API do Cloudinary. |
 | `CLOUDINARY_API_SECRET` | `app/settings.py` | Sim | Segredo de API do Cloudinary. |
+| `REDIS_URL` | `app/settings.py` | Não | Broker do channel layer (tempo real do Escudo do Mestre). Sem ele, usa o layer em memória — correto apenas com **um** processo (runserver ou um único Daphne). Obrigatório ao escalar para mais de um processo/instância. |
 
 Exemplo de `.env` local (**nunca** commitar um `.env` real — `.gitignore`
 já exclui `.env` e `.env.*`, exceto `.env.example`):
@@ -295,8 +296,15 @@ services:
     name: minha-api-django
     runtime: python
     buildCommand: "./build.sh"
-    startCommand: "gunicorn app.wsgi:application"
+    startCommand: "daphne -b 0.0.0.0 -p $PORT app.asgi:application"
 ```
+
+O servidor é ASGI (Daphne) porque o Escudo do Mestre sincroniza em tempo
+real por WebSocket (`ws/campanha/<id>/escudo/`, ver `Campanha/consumers.py`,
+`Campanha/signals.py` e `Campanha/escudo.py`). Com um único processo, o
+channel layer em memória basta; com mais de um, defina `REDIS_URL`.
+Em desenvolvimento nada muda: `daphne` está em `INSTALLED_APPS`, então
+`python manage.py runserver` já atende HTTP e WebSocket.
 
 `build.sh` executa, nesta ordem:
 

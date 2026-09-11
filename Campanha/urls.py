@@ -400,6 +400,16 @@ urlpatterns = [
     ),
 
 
+    # Escudo do Mestre: carga completa (status/atributos/defesas/bônus de
+    # todos os personagens) numa requisição só. As mudanças seguintes chegam
+    # pelo WebSocket `ws/campanha/<pk>/escudo/` (ver Campanha/routing.py).
+    path(
+        "<int:pk>/escudo/",
+        views.escudo_campanha,
+        name="escudo_campanha"
+    ),
+
+
     # "Fazer uma cópia" de uma entidade de mundo (body: { tipo, id }).
     path(
         "<int:pk>/entidades/duplicar/",
