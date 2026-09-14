@@ -93,6 +93,23 @@ urlpatterns = [
     ),
 
 
+    # Predefinições de ficha de NPC — recurso PLANO (sem pk de campanha na
+    # URL), dono = usuário autenticado, no mesmo molde de Personagem. Não é
+    # "de campanha": a mesma predefinição é reaproveitável em qualquer
+    # campanha do usuário.
+    path(
+        "ficha-presets/",
+        views.ficha_preset_lista,
+        name="ficha_preset_lista"
+    ),
+
+    path(
+        "ficha-presets/<int:preset_pk>/",
+        views.ficha_preset_detalhe,
+        name="ficha_preset_detalhe"
+    ),
+
+
     # Locais
     path(
         "<int:pk>/locais/",

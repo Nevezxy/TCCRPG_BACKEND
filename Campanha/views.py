@@ -16,6 +16,7 @@ from django.db.models import Q
 from .models import (
     Campanha,
     NPC,
+    FichaPreset,
     Local,
     Organizacao,
     Mapa,
@@ -38,6 +39,7 @@ from .escudo import montar_snapshot
 from .serializers import (
     CampanhaSerializer,
     NPCSerializer,
+    FichaPresetSerializer,
     LocalSerializer,
     OrganizacaoSerializer,
     MapaSerializer,
@@ -813,6 +815,108 @@ def _conexoes_da_entidade_view(request, modelo, pk, select_related=None):
 @permission_classes([IsAuthenticated])
 def npc_conexoes(request, npc_pk):
     return _conexoes_da_entidade_view(request, NPC, npc_pk, select_related=["campanha"])
+
+
+# ---------------------------------------------------------------------------
+# FichaPreset — predefinições de ficha de NPC, por usuário (não por
+# campanha: servem para reaproveitar a mesma ficha em qualquer campanha do
+# usuário). Recurso "plano", no mesmo molde de `Personagem/views.py`
+# (dono = usuário autenticado), não no molde aninhado-por-campanha do resto
+# deste arquivo — por isso não usa `_busca_campanha_do_participante`/
+# `check_object_permission` (pensados para objetos ligados a uma Campanha).
+# ---------------------------------------------------------------------------
+
+@extend_schema(
+    methods=["GET"],
+    operation_id="listar_fichas_predefinidas",
+    responses=FichaPresetSerializer(many=True),
+)
+@extend_schema(
+    methods=["POST"],
+    operation_id="criar_ficha_predefinida",
+    request=FichaPresetSerializer,
+    responses=FichaPresetSerializer,
+)
+@api_view(["GET", "POST"])
+@permission_classes([IsAuthenticated])
+def ficha_preset_lista(request):
+
+    if request.method == "GET":
+
+        presets = FichaPreset.objects.filter(usuario=request.user)
+
+        serializer = FichaPresetSerializer(presets, many=True)
+
+        return Response(serializer.data)
+
+    elif request.method == "POST":
+
+        serializer = FichaPresetSerializer(data=request.data)
+
+        if serializer.is_valid():
+            preset = serializer.save(usuario=request.user)
+
+            return Response(
+                FichaPresetSerializer(preset).data,
+                status=status.HTTP_201_CREATED
+            )
+
+        return Response(serializer.errors, status=status.HTTP_400_BAD_REQUEST)
+
+
+@extend_schema(
+    methods=["GET"],
+    operation_id="detalhar_ficha_predefinida",
+    responses=FichaPresetSerializer,
+)
+@extend_schema(
+    methods=["PATCH"],
+    operation_id="atualizar_ficha_predefinida",
+    request=FichaPresetSerializer,
+    responses=FichaPresetSerializer,
+)
+@extend_schema(
+    methods=["DELETE"],
+    operation_id="remover_ficha_predefinida",
+    responses=None,
+)
+@api_view(["GET", "PATCH", "DELETE"])
+@permission_classes([IsAuthenticated])
+def ficha_preset_detalhe(request, preset_pk):
+
+    try:
+        preset = FichaPreset.objects.get(pk=preset_pk, usuario=request.user)
+
+    except FichaPreset.DoesNotExist:
+        # 404 (não 403) mesmo quando o preset existe mas é de outro
+        # usuário — não revela a existência de predefinições alheias.
+        return Response(
+            {"erro": "Predefinição não encontrada."},
+            status=status.HTTP_404_NOT_FOUND
+        )
+
+    if request.method == "GET":
+
+        return Response(FichaPresetSerializer(preset).data)
+
+    elif request.method == "PATCH":
+
+        serializer = FichaPresetSerializer(preset, data=request.data, partial=True)
+
+        if serializer.is_valid():
+            serializer.save()
+            return Response(serializer.data)
+
+        return Response(serializer.errors, status=status.HTTP_400_BAD_REQUEST)
+
+    elif request.method == "DELETE":
+
+        preset.delete()
+
+        return Response(
+            {"mensagem": "Predefinição removida com sucesso."},
+            status=status.HTTP_204_NO_CONTENT
+        )
 
 
 # ---------------------------------------------------------------------------
