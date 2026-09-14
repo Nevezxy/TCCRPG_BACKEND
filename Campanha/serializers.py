@@ -7,6 +7,7 @@ from django.db.models import Q
 from .models import (
     Campanha,
     NPC,
+    FichaPreset,
     Local,
     Organizacao,
     Mapa,
@@ -300,6 +301,21 @@ class NPCSerializer(ValidaPastaDaCampanhaMixin, RestringeCamposDeMestreMixin, Cl
             )
 
         return local
+
+
+# ---------------------------------------------------------------------------
+# FichaPreset
+# ---------------------------------------------------------------------------
+
+class FichaPresetSerializer(serializers.ModelSerializer):
+
+    class Meta:
+        model = FichaPreset
+        fields = "__all__"
+        # `usuario` é sempre o usuário autenticado (definido pela view),
+        # nunca o corpo da requisição — mesma proteção contra
+        # mass-assignment usada em `campanha`/`NPCSerializer` acima.
+        read_only_fields = ("usuario", "criado_em", "atualizado_em")
 
 
 # ---------------------------------------------------------------------------

@@ -110,6 +110,43 @@ class NPC(models.Model):
 # `Conexao.objects.filter(...)` (ver serializers.py/views.py) em vez dos
 # antigos related_names `relacoes`/`relacoes_com_outros_npcs`.
 
+class FichaPreset(models.Model):
+    """
+    Modelo reutilizável de ficha de NPC ("predefinição"), salvo pelo
+    usuário a partir do editor de ficha (NPC.ficha) para recriar NPCs
+    parecidos depois — inclusive em outras campanhas.
+
+    Propositalmente SEM ForeignKey para Campanha: é só isso que permite
+    reaproveitar a mesma predefinição ("Goblin", "Guarda da Cidade"...) em
+    qualquer campanha do usuário, não apenas na campanha onde foi criada.
+    Isolado por `usuario` — nunca compartilhado entre usuários, nem quando
+    são mestre/jogador da mesma campanha.
+
+    `dados` guarda uma cópia integral de `NPC.ficha` (que já inclui o
+    `template`/modelo usado) — mesmo princípio de JSON livre já usado em
+    `Canva.dados`, sem duplicar campos de ficha um a um.
+    """
+
+    usuario = models.ForeignKey(
+        settings.AUTH_USER_MODEL, on_delete=models.CASCADE, related_name="fichas_predefinidas"
+    )
+    nome = models.CharField(max_length=200)
+    dados = models.JSONField(default=dict, blank=True)
+
+    criado_em = models.DateTimeField(auto_now_add=True)
+    atualizado_em = models.DateTimeField(auto_now=True)
+
+    class Meta:
+        ordering = ["nome"]
+        constraints = [
+            models.UniqueConstraint(
+                fields=["usuario", "nome"], name="ficha_preset_nome_unico_por_usuario"
+            )
+        ]
+
+    def __str__(self):
+        return self.nome
+
 class Local(models.Model):
     campanha = models.ForeignKey(Campanha, on_delete=models.CASCADE, related_name="locais")
 
