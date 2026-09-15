@@ -467,6 +467,12 @@ urlpatterns = [
     ),
 
     path(
+        "<int:pk>/loja/produtos/lote/",
+        views.produto_loja_lote,
+        name="produto_loja_lote"
+    ),
+
+    path(
         "loja/produtos/<int:produto_pk>/",
         views.produto_loja_detalhe,
         name="produto_loja_detalhe"

@@ -407,3 +407,40 @@ def copiar_para_ficha(origem, personagem, quantidade=1):
     copiar_ajuste(origem, copia, ["foto"])
 
     return copia
+
+
+# ---------------------------------------------------------------------------
+# Categorias iniciais
+# ---------------------------------------------------------------------------
+
+# Prateleiras que toda campanha nova já ganha, para a Loja não nascer vazia —
+# são as três divisões que praticamente toda mesa usa. O mestre renomeia,
+# reordena ou apaga à vontade; não há nada de especial nelas depois de
+# criadas.
+CATEGORIAS_PADRAO = [
+    {"nome": "Armas", "icone": "sword", "ordem": 1},
+    {"nome": "Armaduras", "icone": "shield", "ordem": 2},
+    {"nome": "Itens Gerais", "icone": "package", "ordem": 3},
+]
+
+
+def criar_categorias_padrao(campanha):
+    """
+    Cria as prateleiras iniciais da Loja de uma campanha.
+
+    `ignore_conflicts` protege a UniqueConstraint (campanha, nome): se esta
+    função rodar duas vezes para a mesma campanha — ou se o mestre já tiver
+    criado uma "Armas" à mão —, o que existe é mantido e nada estoura.
+
+    Fica aqui, e não num signal de `post_save`, por uma razão prática: um
+    signal criaria categorias também para toda Campanha construída em
+    teste ou no shell, mudando o estado inicial de dezenas de cenários que
+    não têm nada a ver com a Loja. O único caminho que interessa é a
+    criação pela API, e é de lá que esta função é chamada.
+    """
+    from .models import CategoriaLoja
+
+    CategoriaLoja.objects.bulk_create(
+        [CategoriaLoja(campanha=campanha, **dados) for dados in CATEGORIAS_PADRAO],
+        ignore_conflicts=True,
+    )
