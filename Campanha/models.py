@@ -3,6 +3,7 @@ import string
 
 from django.db import models
 from django.core.exceptions import ValidationError
+from django.utils import timezone
 
 from Personagem.models import Personagem
 from Sistema.models import Sistema
@@ -995,3 +996,158 @@ class ArmaduraCampanha(EquipamentoCampanha):
     class Meta(EquipamentoCampanha.Meta):
         verbose_name = "Armadura da campanha"
         verbose_name_plural = "Armaduras da campanha"
+
+
+# ---------------------------------------------------------------------------
+# Loja da campanha
+#
+# Duas peças: CATEGORIAS criadas pelo mestre (com rotação opcional) e
+# PRODUTOS, que são uma referência a algo que já existe — um equipamento do
+# Sistema usado pela campanha ou um exclusivo dela — mais preço, estoque e
+# disponibilidade.
+#
+# O produto aponta para a origem por GenericForeignKey (mesmo padrão de
+# Nota/Bonus/Conexao) em vez de seis FKs anuláveis, e `modelos_vendaveis()`
+# é a allowlist que impede qualquer outro content_type de entrar. Referência,
+# não cópia: mudar o nome de uma arma do Sistema muda o que a loja mostra, e
+# a loja nunca altera o original.
+# ---------------------------------------------------------------------------
+
+def modelos_vendaveis():
+    """
+    O que pode virar produto: os três equipamentos do app Sistema e os três
+    exclusivos da campanha. Import tardio pelo mesmo motivo de
+    `modelos_conectaveis()`.
+    """
+    from Sistema.models import ArmaduraSistema, ArmaSistema, ItemSistema
+
+    return [
+        ItemSistema, ArmaSistema, ArmaduraSistema,
+        ItemCampanha, ArmaCampanha, ArmaduraCampanha,
+    ]
+
+
+def _semente_aleatoria():
+    # Só precisa ser estável e diferente entre categorias — não é segredo.
+    return random.randint(1, 2_000_000_000)
+
+
+class CategoriaLoja(models.Model):
+    """
+    Prateleira da loja ("Armas", "Consumíveis", "Itens mágicos"...), criada
+    e nomeada pelo mestre. Um produto pode estar em mais de uma.
+
+    ROTAÇÃO: em vez de um job agendado girando o estoque (o projeto não tem
+    fila nem cron), a seleção é uma FUNÇÃO PURA do relógio — ver
+    `Campanha/loja.py`. Os campos abaixo são os parâmetros dessa função:
+    `rotacao_inicio` ancora as janelas, `rotacao_semente` decide o sorteio.
+    Isso dá as três garantias pedidas de uma vez: todo mundo na mesa vê a
+    MESMA seleção (é a mesma conta, feita no servidor), a loja sobrevive a
+    restart/deploy (não há estado guardado) e o cliente não precisa ficar
+    perguntando — a resposta já diz quando vira.
+    """
+
+    METODOS_ROTACAO = [
+        ("aleatorio", "Aleatório"),
+        ("ordem", "Por ordem"),
+    ]
+
+    campanha = models.ForeignKey(Campanha, on_delete=models.CASCADE, related_name="categorias_loja")
+
+    nome = models.CharField(max_length=100)
+    descricao = models.TextField(blank=True)
+
+    icone = models.CharField(max_length=100, blank=True, help_text="Nome do ícone lucide (ex.: 'sword').")
+    cor = models.CharField(max_length=7, blank=True, help_text="Cor hexadecimal (ex.: '#FF0000').")
+
+    ordem = models.PositiveIntegerField(default=0)
+    visivel_para_jogadores = models.BooleanField(default=True)
+
+    rotacao_ativa = models.BooleanField(default=False)
+    rotacao_quantidade = models.PositiveIntegerField(
+        default=3, help_text="Quantos produtos ficam à mostra por vez."
+    )
+    rotacao_intervalo_minutos = models.PositiveIntegerField(
+        default=60, help_text="De quanto em quanto tempo a seleção troca."
+    )
+    rotacao_metodo = models.CharField(max_length=20, choices=METODOS_ROTACAO, default="aleatorio")
+    # Âncora das janelas: a seleção da categoria é decidida por
+    # `floor((agora - rotacao_inicio) / intervalo)`.
+    rotacao_inicio = models.DateTimeField(default=timezone.now)
+    # Trocar a semente re-sorteia a vitrine sem mexer no relógio (é o
+    # "embaralhar de novo" do mestre).
+    rotacao_semente = models.PositiveBigIntegerField(default=_semente_aleatoria)
+
+    criado_em = models.DateTimeField(auto_now_add=True)
+    atualizado_em = models.DateTimeField(auto_now=True)
+
+    class Meta:
+        ordering = ["ordem", "nome"]
+        verbose_name = "Categoria da loja"
+        verbose_name_plural = "Categorias da loja"
+        constraints = [
+            models.UniqueConstraint(
+                fields=["campanha", "nome"], name="categoria_loja_nome_unico_por_campanha"
+            )
+        ]
+        indexes = [models.Index(fields=["campanha", "ordem"])]
+
+    def __str__(self):
+        return self.nome
+
+
+class ProdutoLoja(models.Model):
+    """
+    Um equipamento à venda na loja do mestre, com preço e estoque próprios.
+
+    `campanha` é redundante com a campanha da origem (para os exclusivos) e
+    NÃO é para os do Sistema, que são compartilhados entre mesas — é
+    justamente por isso que existe: é ela que diz de qual loja este produto
+    é, e é por ela que todo filtro e toda permissão passam.
+
+    `quantidade_disponivel` nulo = estoque ilimitado. Zero = esgotado, e o
+    produto deixa de ser comprável (ver a validação da compra).
+    """
+
+    campanha = models.ForeignKey(Campanha, on_delete=models.CASCADE, related_name="produtos_loja")
+
+    categorias = models.ManyToManyField(CategoriaLoja, blank=True, related_name="produtos")
+
+    content_type = models.ForeignKey(ContentType, on_delete=models.CASCADE, related_name="+")
+    object_id = models.PositiveIntegerField()
+    origem = GenericForeignKey("content_type", "object_id")
+
+    preco = models.DecimalField(default=0, max_digits=20, decimal_places=2)
+    quantidade_disponivel = models.PositiveIntegerField(
+        null=True, blank=True, help_text="Vazio = estoque ilimitado."
+    )
+    disponivel = models.BooleanField(default=True)
+
+    ordem = models.PositiveIntegerField(default=0)
+
+    criado_em = models.DateTimeField(auto_now_add=True)
+    atualizado_em = models.DateTimeField(auto_now=True)
+
+    class Meta:
+        ordering = ["ordem", "id"]
+        verbose_name = "Produto da loja"
+        verbose_name_plural = "Produtos da loja"
+        constraints = [
+            # O mesmo equipamento não entra duas vezes na loja da mesma
+            # campanha — preço e estoque dele são um só.
+            models.UniqueConstraint(
+                fields=["campanha", "content_type", "object_id"],
+                name="produto_loja_unico_por_campanha",
+            )
+        ]
+        indexes = [
+            models.Index(fields=["campanha", "disponivel"]),
+            models.Index(fields=["content_type", "object_id"]),
+        ]
+
+    def __str__(self):
+        return f"{self.origem} ({self.preco})"
+
+    @property
+    def esgotado(self):
+        return self.quantidade_disponivel is not None and self.quantidade_disponivel <= 0

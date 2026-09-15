@@ -12,6 +12,7 @@ from Personagem.models import Arma, Armadura, Item, Personagem
 from Personagem.serializers import ArmaSerializer, ArmaduraSerializer, ItemSerializer, PersonagemSerializer
 
 from django.contrib.contenttypes.models import ContentType
+from django.db import IntegrityError
 from django.db.models import Q
 
 from .models import (
@@ -37,9 +38,13 @@ from .models import (
     ItemCampanha,
     ArmaCampanha,
     ArmaduraCampanha,
+    CategoriaLoja,
+    ProdutoLoja,
+    modelos_vendaveis,
 )
 from Usuario.permissions import check_object_permission, pode_criar_ou_excluir, usuario_pode_ver_objeto
 from .escudo import montar_snapshot
+from . import loja
 from .serializers import (
     CampanhaSerializer,
     NPCSerializer,
@@ -63,6 +68,8 @@ from .serializers import (
     ItemCampanhaSerializer,
     ArmaCampanhaSerializer,
     ArmaduraCampanhaSerializer,
+    CategoriaLojaSerializer,
+    ProdutoLojaSerializer,
     campanhas_do_objeto_notavel,
     conexoes_de_entidade,
 )
@@ -3131,3 +3138,268 @@ def copiar_arma_campanha(request, personagem_id, arma_id):
 @permission_classes([IsAuthenticated])
 def copiar_armadura_campanha(request, personagem_id, armadura_id):
     return _copiar_equipamento_campanha(request, personagem_id, armadura_id, "armadura")
+
+
+# ---------------------------------------------------------------------------
+# Loja da campanha
+#
+# Categorias e produtos são administrados SÓ pelo mestre; os jogadores
+# consomem a vitrine (`loja_vitrine`), que já vem com a seleção da rotação
+# aplicada. Por isso a listagem de produtos é do mestre: ela mostra o
+# estoque inteiro, inclusive o que está fora de venda — não é o que o
+# jogador deve ver.
+# ---------------------------------------------------------------------------
+
+@extend_schema(
+    methods=["GET"], operation_id="listar_categorias_loja", responses=CategoriaLojaSerializer(many=True)
+)
+@extend_schema(
+    methods=["POST"],
+    operation_id="criar_categoria_loja",
+    request=CategoriaLojaSerializer,
+    responses=CategoriaLojaSerializer,
+)
+@api_view(["GET", "POST"])
+@permission_classes([IsAuthenticated])
+def categoria_loja_lista(request, pk):
+
+    campanha, erro = _busca_campanha_do_participante(request, pk)
+
+    if erro:
+        return erro
+
+    if request.method == "GET":
+        categorias = _filtra_visiveis(request, campanha, campanha.categorias_loja.all())
+
+        return Response(CategoriaLojaSerializer(categorias, many=True).data)
+
+    erro = _exige_mestre(request, campanha)
+
+    if erro:
+        return erro
+
+    serializer = CategoriaLojaSerializer(data=request.data, context={"campanha": campanha, "request": request})
+
+    if serializer.is_valid():
+        categoria = serializer.save(campanha=campanha)
+
+        return Response(CategoriaLojaSerializer(categoria).data, status=status.HTTP_201_CREATED)
+
+    return Response(serializer.errors, status=status.HTTP_400_BAD_REQUEST)
+
+
+@extend_schema(methods=["GET"], operation_id="detalhar_categoria_loja", responses=CategoriaLojaSerializer)
+@extend_schema(
+    methods=["PUT"],
+    operation_id="atualizar_categoria_loja",
+    request=CategoriaLojaSerializer,
+    responses=CategoriaLojaSerializer,
+)
+@extend_schema(
+    methods=["PATCH"],
+    operation_id="atualizar_parcial_categoria_loja",
+    request=CategoriaLojaSerializer,
+    responses=CategoriaLojaSerializer,
+)
+@extend_schema(methods=["DELETE"], operation_id="remover_categoria_loja", responses=None)
+@api_view(["GET", "PUT", "PATCH", "DELETE"])
+@permission_classes([IsAuthenticated])
+def categoria_loja_detalhe(request, categoria_pk):
+
+    try:
+        categoria = CategoriaLoja.objects.select_related("campanha").get(pk=categoria_pk)
+
+    except CategoriaLoja.DoesNotExist:
+        return Response({"erro": "Categoria não encontrada."}, status=status.HTTP_404_NOT_FOUND)
+
+    check_object_permission(request, categoria)
+
+    if request.method == "GET":
+        return Response(CategoriaLojaSerializer(categoria).data)
+
+    erro = _exige_mestre(request, categoria.campanha)
+
+    if erro:
+        return erro
+
+    if request.method in ("PUT", "PATCH"):
+        serializer = CategoriaLojaSerializer(
+            categoria,
+            data=request.data,
+            partial=request.method == "PATCH",
+            context={"campanha": categoria.campanha, "request": request},
+        )
+
+        if serializer.is_valid():
+            serializer.save()
+            return Response(serializer.data)
+
+        return Response(serializer.errors, status=status.HTTP_400_BAD_REQUEST)
+
+    # Excluir a categoria NÃO exclui os produtos: eles continuam na loja,
+    # só ficam sem prateleira (o M2M some junto com a categoria).
+    categoria.delete()
+
+    return Response({"mensagem": "Categoria removida com sucesso."}, status=status.HTTP_204_NO_CONTENT)
+
+
+@extend_schema(methods=["GET"], operation_id="listar_produtos_loja", responses=ProdutoLojaSerializer(many=True))
+@extend_schema(
+    methods=["POST"],
+    operation_id="criar_produto_loja",
+    request=ProdutoLojaSerializer,
+    responses=ProdutoLojaSerializer,
+)
+@api_view(["GET", "POST"])
+@permission_classes([IsAuthenticated])
+def produto_loja_lista(request, pk):
+
+    campanha, erro = _busca_campanha_do_participante(request, pk)
+
+    if erro:
+        return erro
+
+    # Gestão do estoque — inclusive o que está fora de venda. O jogador usa
+    # `loja_vitrine`, que só mostra o que está à venda agora.
+    erro = _exige_mestre(request, campanha)
+
+    if erro:
+        return erro
+
+    if request.method == "GET":
+        produtos = campanha.produtos_loja.select_related("content_type").prefetch_related("categorias")
+
+        return Response(ProdutoLojaSerializer(produtos, many=True).data)
+
+    serializer = ProdutoLojaSerializer(data=request.data, context={"campanha": campanha, "request": request})
+
+    if serializer.is_valid():
+        try:
+            produto = serializer.save(campanha=campanha)
+        except IntegrityError:
+            # A UniqueConstraint (campanha, content_type, object_id) — dois
+            # cliques no mesmo "Adicionar" chegam aqui.
+            return Response(
+                {"origem_id": ["Este equipamento já está na loja desta campanha."]},
+                status=status.HTTP_400_BAD_REQUEST,
+            )
+
+        return Response(ProdutoLojaSerializer(produto).data, status=status.HTTP_201_CREATED)
+
+    return Response(serializer.errors, status=status.HTTP_400_BAD_REQUEST)
+
+
+@extend_schema(methods=["GET"], operation_id="detalhar_produto_loja", responses=ProdutoLojaSerializer)
+@extend_schema(
+    methods=["PUT"],
+    operation_id="atualizar_produto_loja",
+    request=ProdutoLojaSerializer,
+    responses=ProdutoLojaSerializer,
+)
+@extend_schema(
+    methods=["PATCH"],
+    operation_id="atualizar_parcial_produto_loja",
+    request=ProdutoLojaSerializer,
+    responses=ProdutoLojaSerializer,
+)
+@extend_schema(methods=["DELETE"], operation_id="remover_produto_loja", responses=None)
+@api_view(["GET", "PUT", "PATCH", "DELETE"])
+@permission_classes([IsAuthenticated])
+def produto_loja_detalhe(request, produto_pk):
+
+    try:
+        produto = ProdutoLoja.objects.select_related("campanha", "content_type").get(pk=produto_pk)
+
+    except ProdutoLoja.DoesNotExist:
+        return Response({"erro": "Produto não encontrado."}, status=status.HTTP_404_NOT_FOUND)
+
+    erro = _exige_mestre(request, produto.campanha)
+
+    if erro:
+        return erro
+
+    if request.method == "GET":
+        return Response(ProdutoLojaSerializer(produto).data)
+
+    if request.method in ("PUT", "PATCH"):
+        serializer = ProdutoLojaSerializer(
+            produto,
+            data=request.data,
+            partial=request.method == "PATCH",
+            context={"campanha": produto.campanha, "request": request},
+        )
+
+        if serializer.is_valid():
+            serializer.save()
+            return Response(serializer.data)
+
+        return Response(serializer.errors, status=status.HTTP_400_BAD_REQUEST)
+
+    produto.delete()
+
+    return Response({"mensagem": "Produto removido da loja."}, status=status.HTTP_204_NO_CONTENT)
+
+
+@extend_schema(methods=["GET"], operation_id="vitrine_loja", responses=None)
+@api_view(["GET"])
+@permission_classes([IsAuthenticated])
+def loja_vitrine(request, pk):
+    """
+    A loja pronta para exibir, com a rotação de cada categoria já aplicada
+    pelo SERVIDOR — é o que garante que a mesa inteira vê a mesma seleção.
+    `proxima_rotacao_em` diz quando ela muda, para o cliente agendar um
+    único refetch em vez de ficar perguntando.
+    """
+    campanha, erro = _busca_campanha_do_participante(request, pk)
+
+    if erro:
+        return erro
+
+    return Response(loja.montar_vitrine(campanha, request.user))
+
+
+@extend_schema(methods=["GET"], operation_id="equipamentos_disponiveis_loja", responses=None)
+@api_view(["GET"])
+@permission_classes([IsAuthenticated])
+def loja_disponiveis(request, pk):
+    """
+    O que o mestre PODE colocar à venda: os equipamentos das bibliotecas de
+    regras da campanha mais os exclusivos dela — as mesmas seis origens que
+    o serializer aceita, listadas com a mesma regra de escopo, para o
+    formulário nunca oferecer algo que a validação recusaria.
+
+    `ja_na_loja` evita o vaivém de tentar adicionar um item repetido.
+    """
+    campanha, erro = _busca_campanha_do_participante(request, pk)
+
+    if erro:
+        return erro
+
+    erro = _exige_mestre(request, campanha)
+
+    if erro:
+        return erro
+
+    sistemas_ids = list(campanha.sistemas.values_list("id", flat=True))
+
+    objetos = []
+    for modelo in modelos_vendaveis():
+        if hasattr(modelo, "campanha"):
+            objetos.extend(modelo.objects.filter(campanha=campanha))
+        elif sistemas_ids:
+            objetos.extend(modelo.objects.filter(sistema_id__in=sistemas_ids))
+
+    ja_na_loja = {
+        (ct.model, object_id)
+        for ct, object_id in (
+            (p.content_type, p.object_id)
+            for p in campanha.produtos_loja.select_related("content_type")
+        )
+    }
+
+    resumos = loja.resumos_de_origens(objetos)
+
+    return Response([
+        {**resumo, "ja_na_loja": chave in ja_na_loja}
+        for chave, resumo in sorted(resumos.items(), key=lambda par: (par[1]["classe"], par[1]["nome"]))
+    ])

@@ -1,3 +1,7 @@
+from datetime import timedelta
+
+from django.contrib.contenttypes.models import ContentType
+from django.utils import timezone
 from rest_framework import status
 from rest_framework.test import APITestCase
 
@@ -5,9 +9,12 @@ from Usuario.models import Usuario
 from Personagem.models import Personagem
 from Sistema.models import Sistema
 from Personagem.models import Arma, Armadura, Item
+from Sistema.models import ArmaduraSistema, ArmaSistema, ItemSistema
+from . import loja
 from .models import (
     Campanha, NPC, Local, Organizacao, Pasta, TipoConexao, Conexao, Imagem,
     ItemCampanha, ArmaCampanha, ArmaduraCampanha,
+    CategoriaLoja, ProdutoLoja,
 )
 
 
@@ -1279,3 +1286,384 @@ class CopiaEquipamentoParaFichaTests(DuasCampanhasTestCase):
         response = self.client.get(f"/personagem/{self.personagem_a.id}/")
 
         self.assertEqual(response.data["campanhas"], [self.campanha_a.id])
+
+
+# ---------------------------------------------------------------------------
+# Loja da campanha
+# ---------------------------------------------------------------------------
+
+class LojaBaseTestCase(DuasCampanhasTestCase):
+    """Campanha A com um sistema em uso e alguns equipamentos vendáveis."""
+
+    def setUp(self):
+        super().setUp()
+        self.sistema = Sistema.objects.create(nome="Tormenta")
+        self.campanha_a.sistemas.add(self.sistema)
+        self.campanha_a.sistema = self.sistema
+        self.campanha_a.save(update_fields=["sistema"])
+
+        self.item_sistema = ItemSistema.objects.create(sistema=self.sistema, nome="Corda", valor=5)
+        self.arma_sistema = ArmaSistema.objects.create(sistema=self.sistema, nome="Espada", valor=100, dano="1d8")
+        self.armadura_sistema = ArmaduraSistema.objects.create(
+            sistema=self.sistema, nome="Couro", valor=60, defesa=2
+        )
+        self.item_exclusivo = ItemCampanha.objects.create(
+            campanha=self.campanha_a, nome="Poção do Arauto", valor=80
+        )
+
+        # Sistema que a campanha A NÃO usa.
+        self.sistema_alheio = Sistema.objects.create(nome="Outro")
+        self.item_alheio = ItemSistema.objects.create(sistema=self.sistema_alheio, nome="Proibido")
+
+    def cria_produto(self, origem, preco="10.00", **extra):
+        return ProdutoLoja.objects.create(
+            campanha=self.campanha_a,
+            content_type=ContentType.objects.get_for_model(type(origem)),
+            object_id=origem.pk,
+            preco=preco,
+            **extra,
+        )
+
+
+class CategoriaLojaTests(LojaBaseTestCase):
+
+    def test_mestre_cria_categoria(self):
+        self.autentica_como(self.mestre_a)
+
+        response = self.client.post(
+            f"/campanha/{self.campanha_a.id}/loja/categorias/",
+            {"nome": "Consumíveis", "icone": "flask-conical"},
+            format="json",
+        )
+
+        self.assertEqual(response.status_code, status.HTTP_201_CREATED, response.data)
+        self.assertEqual(response.data["nome"], "Consumíveis")
+        self.assertFalse(response.data["rotacao_ativa"])
+
+    def test_jogador_nao_cria_nem_edita_categoria(self):
+        categoria = CategoriaLoja.objects.create(campanha=self.campanha_a, nome="Armas")
+        self.autentica_como(self.jogador_a)
+
+        criar = self.client.post(
+            f"/campanha/{self.campanha_a.id}/loja/categorias/", {"nome": "Pirata"}, format="json"
+        )
+        editar = self.client.patch(
+            f"/campanha/loja/categorias/{categoria.id}/", {"nome": "Mudado"}, format="json"
+        )
+
+        self.assertEqual(criar.status_code, status.HTTP_403_FORBIDDEN)
+        self.assertEqual(editar.status_code, status.HTTP_403_FORBIDDEN)
+
+    def test_nome_repetido_na_mesma_campanha_e_recusado(self):
+        CategoriaLoja.objects.create(campanha=self.campanha_a, nome="Armas")
+        self.autentica_como(self.mestre_a)
+
+        response = self.client.post(
+            f"/campanha/{self.campanha_a.id}/loja/categorias/", {"nome": "Armas"}, format="json"
+        )
+
+        self.assertEqual(response.status_code, status.HTTP_400_BAD_REQUEST)
+
+    def test_rotacao_com_parametros_invalidos_e_recusada(self):
+        self.autentica_como(self.mestre_a)
+
+        response = self.client.post(
+            f"/campanha/{self.campanha_a.id}/loja/categorias/",
+            {"nome": "Raros", "rotacao_ativa": True, "rotacao_quantidade": 0, "rotacao_intervalo_minutos": 0},
+            format="json",
+        )
+
+        self.assertEqual(response.status_code, status.HTTP_400_BAD_REQUEST)
+        self.assertIn("rotacao_quantidade", response.data)
+        self.assertIn("rotacao_intervalo_minutos", response.data)
+
+    def test_excluir_categoria_nao_exclui_os_produtos(self):
+        categoria = CategoriaLoja.objects.create(campanha=self.campanha_a, nome="Armas")
+        produto = self.cria_produto(self.arma_sistema)
+        produto.categorias.add(categoria)
+        self.autentica_como(self.mestre_a)
+
+        self.client.delete(f"/campanha/loja/categorias/{categoria.id}/")
+
+        produto.refresh_from_db()
+        self.assertEqual(ProdutoLoja.objects.count(), 1)
+        self.assertEqual(produto.categorias.count(), 0)
+
+
+class ProdutoLojaTests(LojaBaseTestCase):
+
+    def test_mestre_poe_equipamento_do_sistema_a_venda(self):
+        self.autentica_como(self.mestre_a)
+
+        response = self.client.post(
+            f"/campanha/{self.campanha_a.id}/loja/produtos/",
+            {"origem_tipo": "armasistema", "origem_id": self.arma_sistema.id, "preco": "150.00"},
+            format="json",
+        )
+
+        self.assertEqual(response.status_code, status.HTTP_201_CREATED, response.data)
+        self.assertEqual(response.data["origem"]["nome"], "Espada")
+        self.assertEqual(response.data["origem"]["classe"], "arma")
+        self.assertEqual(response.data["origem"]["dano"], "1d8")
+
+    def test_mestre_poe_exclusivo_da_campanha_a_venda(self):
+        self.autentica_como(self.mestre_a)
+
+        response = self.client.post(
+            f"/campanha/{self.campanha_a.id}/loja/produtos/",
+            {"origem_tipo": "itemcampanha", "origem_id": self.item_exclusivo.id, "preco": "80.00"},
+            format="json",
+        )
+
+        self.assertEqual(response.status_code, status.HTTP_201_CREATED, response.data)
+        self.assertEqual(response.data["origem"]["nome"], "Poção do Arauto")
+
+    def test_equipamento_de_sistema_fora_da_campanha_e_recusado(self):
+        self.autentica_como(self.mestre_a)
+
+        response = self.client.post(
+            f"/campanha/{self.campanha_a.id}/loja/produtos/",
+            {"origem_tipo": "itemsistema", "origem_id": self.item_alheio.id, "preco": "1.00"},
+            format="json",
+        )
+
+        self.assertEqual(response.status_code, status.HTTP_400_BAD_REQUEST)
+        self.assertIn("origem_id", response.data)
+
+    def test_exclusivo_de_outra_campanha_e_recusado(self):
+        alheio = ItemCampanha.objects.create(campanha=self.campanha_b, nome="De outra mesa")
+        self.autentica_como(self.mestre_a)
+
+        response = self.client.post(
+            f"/campanha/{self.campanha_a.id}/loja/produtos/",
+            {"origem_tipo": "itemcampanha", "origem_id": alheio.id, "preco": "1.00"},
+            format="json",
+        )
+
+        self.assertEqual(response.status_code, status.HTTP_400_BAD_REQUEST)
+
+    def test_tipo_fora_da_allowlist_e_recusado(self):
+        self.autentica_como(self.mestre_a)
+
+        response = self.client.post(
+            f"/campanha/{self.campanha_a.id}/loja/produtos/",
+            {"origem_tipo": "npc", "origem_id": self.npc_a1.id, "preco": "1.00"},
+            format="json",
+        )
+
+        self.assertEqual(response.status_code, status.HTTP_400_BAD_REQUEST)
+        self.assertIn("origem_tipo", response.data)
+
+    def test_mesmo_equipamento_duas_vezes_e_recusado(self):
+        self.cria_produto(self.arma_sistema)
+        self.autentica_como(self.mestre_a)
+
+        response = self.client.post(
+            f"/campanha/{self.campanha_a.id}/loja/produtos/",
+            {"origem_tipo": "armasistema", "origem_id": self.arma_sistema.id, "preco": "1.00"},
+            format="json",
+        )
+
+        self.assertEqual(response.status_code, status.HTTP_400_BAD_REQUEST)
+
+    def test_jogador_nao_lista_nem_cria_produtos(self):
+        self.autentica_como(self.jogador_a)
+
+        listar = self.client.get(f"/campanha/{self.campanha_a.id}/loja/produtos/")
+        criar = self.client.post(
+            f"/campanha/{self.campanha_a.id}/loja/produtos/",
+            {"origem_tipo": "armasistema", "origem_id": self.arma_sistema.id},
+            format="json",
+        )
+
+        self.assertEqual(listar.status_code, status.HTTP_403_FORBIDDEN)
+        self.assertEqual(criar.status_code, status.HTTP_403_FORBIDDEN)
+
+    def test_disponiveis_lista_as_seis_origens_no_escopo(self):
+        self.cria_produto(self.arma_sistema)
+        self.autentica_como(self.mestre_a)
+
+        response = self.client.get(f"/campanha/{self.campanha_a.id}/loja/disponiveis/")
+
+        nomes = {r["nome"] for r in response.data}
+        self.assertEqual(nomes, {"Corda", "Espada", "Couro", "Poção do Arauto"})
+        self.assertNotIn("Proibido", nomes)
+        ja = {r["nome"]: r["ja_na_loja"] for r in response.data}
+        self.assertTrue(ja["Espada"])
+        self.assertFalse(ja["Corda"])
+
+
+class VitrineTests(LojaBaseTestCase):
+
+    def test_jogador_ve_a_vitrine_e_nao_ve_o_que_nao_esta_a_venda(self):
+        categoria = CategoriaLoja.objects.create(campanha=self.campanha_a, nome="Geral")
+        a_venda = self.cria_produto(self.arma_sistema, preco="150.00")
+        fora = self.cria_produto(self.item_sistema, disponivel=False)
+        esgotado = self.cria_produto(self.armadura_sistema, quantidade_disponivel=0)
+        for produto in (a_venda, fora, esgotado):
+            produto.categorias.add(categoria)
+
+        self.autentica_como(self.jogador_a)
+        response = self.client.get(f"/campanha/{self.campanha_a.id}/loja/")
+
+        self.assertEqual(response.status_code, status.HTTP_200_OK)
+        nomes = [p["origem"]["nome"] for p in response.data["categorias"][0]["produtos"]]
+        self.assertEqual(nomes, ["Espada"])
+
+    def test_mestre_ve_inclusive_o_que_esta_fora_de_venda(self):
+        categoria = CategoriaLoja.objects.create(campanha=self.campanha_a, nome="Geral")
+        for origem in (self.arma_sistema, self.item_sistema):
+            self.cria_produto(origem, disponivel=False).categorias.add(categoria)
+
+        self.autentica_como(self.mestre_a)
+        response = self.client.get(f"/campanha/{self.campanha_a.id}/loja/")
+
+        self.assertEqual(len(response.data["categorias"][0]["produtos"]), 2)
+
+    def test_categoria_escondida_some_para_o_jogador(self):
+        escondida = CategoriaLoja.objects.create(
+            campanha=self.campanha_a, nome="Segredos", visivel_para_jogadores=False
+        )
+        self.cria_produto(self.arma_sistema).categorias.add(escondida)
+
+        self.autentica_como(self.jogador_a)
+        response = self.client.get(f"/campanha/{self.campanha_a.id}/loja/")
+
+        self.assertEqual(response.data["categorias"], [])
+        # E também não vaza pelo balaio de "sem categoria".
+        self.assertEqual(response.data["sem_categoria"], [])
+
+    def test_produto_sem_categoria_aparece_no_balaio(self):
+        self.cria_produto(self.item_sistema)
+
+        self.autentica_como(self.jogador_a)
+        response = self.client.get(f"/campanha/{self.campanha_a.id}/loja/")
+
+        self.assertEqual([p["origem"]["nome"] for p in response.data["sem_categoria"]], ["Corda"])
+
+    def test_um_produto_pode_estar_em_duas_categorias(self):
+        armas = CategoriaLoja.objects.create(campanha=self.campanha_a, nome="Armas", ordem=1)
+        raros = CategoriaLoja.objects.create(campanha=self.campanha_a, nome="Raros", ordem=2)
+        self.cria_produto(self.arma_sistema).categorias.add(armas, raros)
+
+        self.autentica_como(self.jogador_a)
+        response = self.client.get(f"/campanha/{self.campanha_a.id}/loja/")
+
+        por_nome = {c["nome"]: c for c in response.data["categorias"]}
+        self.assertEqual(len(por_nome["Armas"]["produtos"]), 1)
+        self.assertEqual(len(por_nome["Raros"]["produtos"]), 1)
+
+    def test_nao_participante_nao_acessa_a_vitrine(self):
+        self.autentica_como(self.jogador_b)
+
+        response = self.client.get(f"/campanha/{self.campanha_a.id}/loja/")
+
+        self.assertEqual(response.status_code, status.HTTP_403_FORBIDDEN)
+
+
+class RotacaoTests(LojaBaseTestCase):
+    """
+    A rotação é uma função pura do relógio — estes testes existem para travar
+    justamente isso: mesma janela, mesma seleção, em qualquer processo; e a
+    seleção muda sozinha quando a janela vira.
+    """
+
+    def setUp(self):
+        super().setUp()
+        self.inicio = timezone.now() - timedelta(days=1)
+        self.categoria = CategoriaLoja.objects.create(
+            campanha=self.campanha_a,
+            nome="Rotativos",
+            rotacao_ativa=True,
+            rotacao_quantidade=2,
+            rotacao_intervalo_minutos=60,
+            rotacao_inicio=self.inicio,
+            rotacao_semente=12345,
+        )
+        self.produtos = []
+        for i in range(6):
+            origem = ItemCampanha.objects.create(campanha=self.campanha_a, nome=f"Item {i}", valor=10)
+            produto = self.cria_produto(origem, ordem=i)
+            produto.categorias.add(self.categoria)
+            self.produtos.append(produto)
+
+    def _selecao(self, agora, metodo=None):
+        if metodo:
+            self.categoria.rotacao_metodo = metodo
+        return [p.id for p in loja.selecionar(self.categoria, self.produtos, agora)]
+
+    def test_mesma_janela_produz_sempre_a_mesma_selecao(self):
+        agora = self.inicio + timedelta(minutes=90)
+
+        primeira = self._selecao(agora)
+        # Mesmo instante, outra chamada — é o que dois jogadores diferentes
+        # pedindo a vitrine ao mesmo tempo produzem.
+        segunda = self._selecao(agora + timedelta(seconds=30))
+
+        self.assertEqual(primeira, segunda)
+        self.assertEqual(len(primeira), 2)
+
+    def test_a_selecao_muda_quando_a_janela_vira(self):
+        antes = self._selecao(self.inicio + timedelta(minutes=30))
+        depois = self._selecao(self.inicio + timedelta(minutes=90))
+
+        self.assertNotEqual(antes, depois)
+
+    def test_metodo_por_ordem_anda_em_fatias_ciclicas(self):
+        ids = [p.id for p in self.produtos]
+
+        janela0 = self._selecao(self.inicio + timedelta(minutes=1), metodo="ordem")
+        janela1 = self._selecao(self.inicio + timedelta(minutes=61), metodo="ordem")
+        janela2 = self._selecao(self.inicio + timedelta(minutes=121), metodo="ordem")
+        # Três janelas de 2 em 6 produtos: a quarta volta ao começo.
+        janela3 = self._selecao(self.inicio + timedelta(minutes=181), metodo="ordem")
+
+        self.assertEqual(janela0, ids[0:2])
+        self.assertEqual(janela1, ids[2:4])
+        self.assertEqual(janela2, ids[4:6])
+        self.assertEqual(janela3, ids[0:2])
+
+    def test_sem_rotacao_mostra_tudo(self):
+        self.categoria.rotacao_ativa = False
+
+        self.assertEqual(len(self._selecao(timezone.now())), 6)
+
+    def test_vitrine_menor_que_o_estoque_mostra_tudo(self):
+        self.categoria.rotacao_quantidade = 10
+
+        self.assertEqual(len(self._selecao(timezone.now())), 6)
+
+    def test_vitrine_informa_quando_a_proxima_rotacao_acontece(self):
+        self.autentica_como(self.jogador_a)
+
+        response = self.client.get(f"/campanha/{self.campanha_a.id}/loja/")
+
+        categoria = response.data["categorias"][0]
+        self.assertEqual(len(categoria["produtos"]), 2)
+        self.assertEqual(categoria["total_produtos"], 6)
+        self.assertIsNotNone(response.data["proxima_rotacao_em"])
+        # A virada é sempre no futuro e dentro de um intervalo.
+        self.assertGreater(response.data["proxima_rotacao_em"], timezone.now())
+        self.assertLessEqual(
+            response.data["proxima_rotacao_em"], timezone.now() + timedelta(minutes=60)
+        )
+
+    def test_sem_rotacao_efetiva_a_vitrine_nao_agenda_despertador(self):
+        """Rotação ligada mas com vitrine maior que o estoque: nada muda, e
+        acordar o cliente seria uma requisição à toa."""
+        self.categoria.rotacao_quantidade = 10
+        self.categoria.save(update_fields=["rotacao_quantidade"])
+        self.autentica_como(self.jogador_a)
+
+        response = self.client.get(f"/campanha/{self.campanha_a.id}/loja/")
+
+        self.assertIsNone(response.data["proxima_rotacao_em"])
+
+    def test_produto_escondido_pela_rotacao_nao_esta_a_venda(self):
+        agora = timezone.now()
+        visiveis = {p.id for p in loja.selecionar(self.categoria, self.produtos, agora)}
+        escondido = next(p for p in self.produtos if p.id not in visiveis)
+
+        self.assertFalse(loja.produto_a_venda(escondido, self.jogador_a, self.campanha_a, agora))
+        a_mostra = next(p for p in self.produtos if p.id in visiveis)
+        self.assertTrue(loja.produto_a_venda(a_mostra, self.jogador_a, self.campanha_a, agora))

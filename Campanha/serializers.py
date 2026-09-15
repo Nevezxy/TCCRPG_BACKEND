@@ -1,5 +1,6 @@
 import hashlib
 
+from drf_spectacular.utils import extend_schema_field
 from rest_framework import serializers
 from django.contrib.contenttypes.models import ContentType
 from django.db.models import Q
@@ -27,7 +28,10 @@ from .models import (
     ItemCampanha,
     ArmaCampanha,
     ArmaduraCampanha,
+    CategoriaLoja,
+    ProdutoLoja,
     modelos_conectaveis,
+    modelos_vendaveis,
 )
 from Personagem.models import Personagem
 from Personagem.serializers import CloudinaryUrlSerializerMixin  # ajuste o import conforme seu projeto
@@ -1089,3 +1093,143 @@ class ArmaduraCampanhaSerializer(EntidadeMundoSerializer):
 
     class Meta(EntidadeMundoSerializer.Meta):
         model = ArmaduraCampanha
+
+
+# ---------------------------------------------------------------------------
+# Loja da campanha
+# ---------------------------------------------------------------------------
+
+class CategoriaLojaSerializer(serializers.ModelSerializer):
+    """
+    Prateleira da loja. `campanha` vem sempre da URL (mesmo racional das
+    entidades de mundo), e os limites da rotação são validados aqui para o
+    banco nunca guardar uma configuração que a vitrine não saberia aplicar.
+    """
+
+    total_produtos = serializers.SerializerMethodField(read_only=True)
+
+    class Meta:
+        model = CategoriaLoja
+        fields = "__all__"
+        read_only_fields = ("campanha", "criado_em", "atualizado_em")
+
+    @extend_schema_field(serializers.IntegerField())
+    def get_total_produtos(self, obj):
+        return obj.produtos.count()
+
+    def validate_nome(self, nome):
+        """
+        A UniqueConstraint (campanha, nome) garante isso no banco, mas
+        `campanha` é read-only aqui — vem da URL —, então o DRF não consegue
+        montar o validador sozinho e o IntegrityError vazaria como 500.
+        Mesmo tratamento que `ImagemSerializer.validate_nome` já dá ao nome
+        único de Imagem.
+        """
+        campanha = self.instance.campanha if self.instance else self.context.get("campanha")
+        nome_limpo = (nome or "").strip()
+
+        if campanha and nome_limpo:
+            existentes = CategoriaLoja.objects.filter(campanha=campanha, nome__iexact=nome_limpo)
+
+            if self.instance:
+                existentes = existentes.exclude(pk=self.instance.pk)
+
+            if existentes.exists():
+                raise serializers.ValidationError("Já existe uma categoria com este nome nesta loja.")
+
+        return nome_limpo
+
+    def validate_rotacao_quantidade(self, valor):
+        if valor < 1:
+            raise serializers.ValidationError("A vitrine precisa mostrar pelo menos 1 produto.")
+        return valor
+
+    def validate_rotacao_intervalo_minutos(self, valor):
+        if valor < 1:
+            raise serializers.ValidationError("O intervalo da rotação precisa ser de pelo menos 1 minuto.")
+        return valor
+
+
+class ProdutoLojaSerializer(serializers.ModelSerializer):
+    """
+    Um equipamento à venda. A origem entra na escrita como o par
+    (`origem_tipo`, `origem_id`) — o mesmo formato de `Conexao`/`Nota` — e
+    sai na leitura já resolvida em `origem`, com o que o card precisa.
+
+    Duas validações de ESCOPO, as que impedem a loja de vender o que a mesa
+    não deveria ter: um equipamento do Sistema só entra se aquele sistema
+    estiver entre as bibliotecas da campanha, e um exclusivo só entra se for
+    desta campanha.
+    """
+
+    origem_tipo = serializers.CharField(write_only=True, required=False)
+    origem_id = serializers.IntegerField(write_only=True, required=False)
+    origem = serializers.SerializerMethodField(read_only=True)
+
+    class Meta:
+        model = ProdutoLoja
+        fields = [
+            "id", "campanha", "categorias", "preco", "quantidade_disponivel",
+            "disponivel", "ordem", "origem", "origem_tipo", "origem_id",
+            "criado_em", "atualizado_em",
+        ]
+        read_only_fields = ("campanha", "criado_em", "atualizado_em")
+
+    @extend_schema_field(serializers.DictField(allow_null=True))
+    def get_origem(self, obj):
+        from .loja import resumos_de_origens
+
+        if obj.origem is None:
+            return None
+        return resumos_de_origens([obj.origem]).get((obj.content_type.model, obj.object_id))
+
+    def validate_categorias(self, categorias):
+        campanha = self.instance.campanha if self.instance else self.context.get("campanha")
+        if campanha and any(c.campanha_id != campanha.id for c in categorias):
+            raise serializers.ValidationError("Há uma categoria que não é desta campanha.")
+        return categorias
+
+    def validate(self, attrs):
+        campanha = self.instance.campanha if self.instance else self.context.get("campanha")
+        tipo = attrs.pop("origem_tipo", None)
+        origem_id = attrs.pop("origem_id", None)
+
+        if tipo is None and origem_id is None:
+            if self.instance is None:
+                raise serializers.ValidationError(
+                    {"origem_tipo": "Informe qual equipamento será vendido."}
+                )
+            return attrs
+
+        if tipo is None or origem_id is None:
+            raise serializers.ValidationError(
+                {"origem_tipo": "Informe `origem_tipo` e `origem_id` juntos."}
+            )
+
+        permitidos = {m._meta.model_name: m for m in modelos_vendaveis()}
+        modelo = permitidos.get(str(tipo).lower())
+
+        if modelo is None:
+            raise serializers.ValidationError(
+                {"origem_tipo": "Este tipo de equipamento não pode ser vendido na loja."}
+            )
+
+        objeto = modelo.objects.filter(pk=origem_id).first()
+
+        if objeto is None:
+            raise serializers.ValidationError({"origem_id": "Equipamento não encontrado."})
+
+        if campanha is not None:
+            if hasattr(objeto, "campanha_id"):
+                if objeto.campanha_id != campanha.id:
+                    raise serializers.ValidationError(
+                        {"origem_id": "Este equipamento é exclusivo de outra campanha."}
+                    )
+            elif not campanha.sistemas.filter(pk=objeto.sistema_id).exists():
+                raise serializers.ValidationError(
+                    {"origem_id": "Este equipamento é de um sistema que esta campanha não usa."}
+                )
+
+        attrs["content_type"] = ContentType.objects.get_for_model(modelo)
+        attrs["object_id"] = objeto.pk
+        return attrs

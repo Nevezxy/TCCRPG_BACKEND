@@ -432,6 +432,47 @@ urlpatterns = [
     ),
 
 
+    # ------------------------------------------------------------------
+    # Loja da campanha — categorias e produtos são do mestre; a vitrine
+    # (já com a rotação aplicada no servidor) é de qualquer participante.
+    # ------------------------------------------------------------------
+    path(
+        "<int:pk>/loja/",
+        views.loja_vitrine,
+        name="loja_vitrine"
+    ),
+
+    path(
+        "<int:pk>/loja/disponiveis/",
+        views.loja_disponiveis,
+        name="loja_disponiveis"
+    ),
+
+    path(
+        "<int:pk>/loja/categorias/",
+        views.categoria_loja_lista,
+        name="categoria_loja_lista"
+    ),
+
+    path(
+        "loja/categorias/<int:categoria_pk>/",
+        views.categoria_loja_detalhe,
+        name="categoria_loja_detalhe"
+    ),
+
+    path(
+        "<int:pk>/loja/produtos/",
+        views.produto_loja_lista,
+        name="produto_loja_lista"
+    ),
+
+    path(
+        "loja/produtos/<int:produto_pk>/",
+        views.produto_loja_detalhe,
+        name="produto_loja_detalhe"
+    ),
+
+
     # Pastas — árvore de organização estilo Obsidian (seção 3)
     path(
         "<int:pk>/pastas/",
