@@ -18,6 +18,13 @@ from django.contrib.contenttypes.models import ContentType
 class Campanha(models.Model):
     mestre = models.ForeignKey(settings.AUTH_USER_MODEL, on_delete=models.CASCADE, related_name="campanhas_criadas")
     jogadores = models.ManyToManyField(settings.AUTH_USER_MODEL, related_name="campanhas", blank=True)
+    # Jogadores promovidos a Moderador pelo mestre — sempre um SUBCONJUNTO de
+    # `jogadores` (a UI só deixa promover quem já está na campanha). Um
+    # moderador tem todos os poderes do mestre sobre a campanha (ver
+    # `Usuario.permissions.pode_gerenciar_campanha`), MENOS excluir a
+    # campanha e remover jogadores — essas duas ações continuam checando
+    # `mestre` diretamente, nunca este campo.
+    moderadores = models.ManyToManyField(settings.AUTH_USER_MODEL, related_name="campanhas_moderadas", blank=True)
     personagens = models.ManyToManyField(Personagem, related_name="campanhas", blank=True)
     
     banner = CloudinaryField("Banner", blank=True, null=True)

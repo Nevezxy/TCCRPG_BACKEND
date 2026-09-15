@@ -23,6 +23,26 @@ def _get_campanha(obj):
     return None
 
 
+def pode_gerenciar_campanha(campanha, user):
+    """
+    Regra central de "tem poder de mestre nesta campanha": o dono
+    (`mestre`) ou um jogador promovido a Moderador (`moderadores`).
+
+    Moderador tem TODAS as permissões do mestre sobre a campanha, com
+    exatamente duas exceções — que NÃO passam por aqui, e continuam
+    checando `campanha.mestre == user` diretamente onde importa:
+      - excluir a própria campanha (`campanha` view, branch DELETE);
+      - remover (expulsar) um jogador (`remover_jogador`).
+    """
+    if user.is_superuser:
+        return True
+
+    if campanha.mestre_id == user.id:
+        return True
+
+    return campanha.moderadores.filter(pk=user.id).exists()
+
+
 def _pode_acessar_personagem(personagem, user, is_safe):
     """
     Regra única de acesso a um Personagem que NÃO é do usuário logado —
@@ -31,21 +51,21 @@ def _pode_acessar_personagem(personagem, user, is_safe):
     Poder, Habilidade, Bônus...). Ponto único de manutenção: mudar a regra
     aqui já vale para toda a ficha, em qualquer endpoint.
 
-      - Mestre de QUALQUER campanha à qual este personagem esteja
-        vinculado: leitura E edição plena (é o que permite ao mestre gerir
-        a ficha de qualquer jogador da própria mesa).
-      - Jogador (não mestre) de uma campanha em comum: só leitura — é o
-        que já alimentava o Escudo do Mestre/visão entre jogadores.
+      - Mestre OU Moderador de QUALQUER campanha à qual este personagem
+        esteja vinculado: leitura E edição plena (é o que permite gerir a
+        ficha de qualquer jogador da própria mesa).
+      - Jogador comum de uma campanha em comum: só leitura — é o que já
+        alimentava o Escudo do Mestre/visão entre jogadores.
 
     Não decide sozinho sobre EXCLUIR o próprio Personagem (a ficha
     inteira) — isso é tratado à parte por quem chama esta função, porque
     apagar a ficha toda de outra pessoa continua exclusivo do dono, mesmo
-    para o mestre.
+    para o mestre/moderador.
     """
     if not hasattr(personagem, "campanhas"):
         return False
 
-    if personagem.campanhas.filter(mestre=user).exists():
+    if personagem.campanhas.filter(Q(mestre=user) | Q(moderadores=user)).exists():
         return True
 
     if is_safe:
@@ -73,7 +93,7 @@ def usuario_pode_ver_objeto(user, obj):
     campanha = _get_campanha(obj)
 
     if campanha is not None:
-        if campanha.mestre == user:
+        if pode_gerenciar_campanha(campanha, user):
             return True
         if not campanha.jogadores.filter(pk=user.pk).exists():
             return False
@@ -113,6 +133,12 @@ class IsOwnerOrAdmin(BasePermission):
             if obj.mestre == request.user:
                 return True
 
+            # Moderador tem os mesmos poderes do mestre sobre a campanha
+            # (ex.: editar nome/banner), MENOS excluí-la — por isso o
+            # DELETE fica de fora deste ramo, mesmo para moderador.
+            if request.method != "DELETE" and obj.moderadores.filter(pk=request.user.pk).exists():
+                return True
+
             if is_safe:
                 return usuario_pode_ver_objeto(request.user, obj)
 
@@ -121,15 +147,15 @@ class IsOwnerOrAdmin(BasePermission):
         # --- Objetos "de mundo" pertencentes a uma Campanha: NPC, Local,
         # Organizacao, Mapa, Sessao, Missao, Evento, Pasta, Conexao, etc.
         # Regra:
-        #   - mestre: acesso total (ler, criar, editar, excluir)
+        #   - mestre/moderador: acesso total (ler, criar, editar, excluir)
         #   - jogador: leitura só se visivel_para_jogadores=True;
         #     escrita (PUT/PATCH) só se, além de visível, também for
-        #     editavel_para_jogadores=True; DELETE nunca (só o mestre).
+        #     editavel_para_jogadores=True; DELETE nunca (só mestre/moderador).
         campanha = _get_campanha(obj)
 
         if campanha is not None:
 
-            if campanha.mestre == request.user:
+            if pode_gerenciar_campanha(campanha, request.user):
                 return True
 
             e_jogador = campanha.jogadores.filter(pk=request.user.pk).exists()
@@ -204,17 +230,18 @@ def pode_criar_ou_excluir(request, campanha):
     Helper para uso nas views de listagem (POST) e nas views de detalhe
     (DELETE) de recursos "de mundo" (NPC, Local, Organizacao, etc.), onde
     ainda não existe uma instância do objeto para checar
-    has_object_permission. Regra: só mestre (ou superuser) pode criar ou
-    excluir esses recursos.
+    has_object_permission. Regra: mestre, moderador (ou superuser) podem
+    criar ou excluir esses recursos.
 
-    Também reaproveitado por `Campanha/views.py` para decidir se quem está
-    removendo um personagem/jogador da campanha é o mestre (com poder de
-    remover qualquer um) ou um jogador comum (só a si mesmo).
+    Também reaproveitado por `Campanha/views.py::remover_personagem` para
+    decidir se quem está removendo um personagem da campanha tem poder de
+    remover qualquer um (mestre/moderador) ou só a si mesmo (jogador
+    comum). NÃO é usado por `remover_jogador` (expulsar um jogador) nem
+    pela exclusão da própria campanha — essas duas ações continuam
+    exclusivas do mestre-dono, mesmo para moderador (ver
+    `_exige_mestre_dono` em `Campanha/views.py`).
     """
-    if request.user.is_superuser:
-        return True
-
-    return campanha.mestre == request.user
+    return pode_gerenciar_campanha(campanha, request.user)
 
 
 def check_object_permission(request, obj):

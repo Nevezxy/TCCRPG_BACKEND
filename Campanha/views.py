@@ -46,7 +46,12 @@ from .models import (
     AnuncioComercioLivre,
     modelos_vendaveis,
 )
-from Usuario.permissions import check_object_permission, pode_criar_ou_excluir, usuario_pode_ver_objeto
+from Usuario.permissions import (
+    check_object_permission,
+    pode_criar_ou_excluir,
+    pode_gerenciar_campanha,
+    usuario_pode_ver_objeto,
+)
 from .escudo import montar_snapshot
 from . import comercio, loja
 from .serializers import (
@@ -478,7 +483,7 @@ def remover_jogador(request, pk, usuario_pk):
             status=status.HTTP_404_NOT_FOUND
         )
 
-    erro = _exige_mestre(request, campanha)
+    erro = _exige_mestre_dono(request, campanha)
 
     if erro:
         return erro
@@ -513,11 +518,78 @@ def remover_jogador(request, pk, usuario_pk):
     )
 
     campanha.jogadores.remove(usuario_pk_int)
+    # Remover o jogador também encerra a moderação dele, se houver — não faz
+    # sentido um usuário continuar "moderador" de uma campanha da qual não
+    # participa mais.
+    campanha.moderadores.remove(usuario_pk_int)
 
     return Response(
         {"mensagem": "Jogador removido da campanha com sucesso."},
         status=status.HTTP_200_OK
     )
+
+
+@extend_schema(
+    methods=["PUT"],
+    operation_id="definir_moderador_campanha",
+    request=None,
+    responses=CampanhaSerializer,
+)
+@extend_schema(
+    methods=["DELETE"],
+    operation_id="remover_moderador_campanha",
+    responses=CampanhaSerializer,
+)
+@api_view(["PUT", "DELETE"])
+@permission_classes([IsAuthenticated])
+def definir_moderador(request, pk, usuario_pk):
+    """
+    O mestre promove (PUT) ou rebaixa (DELETE) um jogador da própria
+    campanha a Moderador. Exclusivo do mestre-dono (`_exige_mestre_dono`) —
+    um moderador não pode promover/remover outro moderador, mesmo tendo
+    todos os demais poderes de mestre sobre a campanha.
+    """
+
+    try:
+        campanha = Campanha.objects.get(pk=pk)
+
+    except Campanha.DoesNotExist:
+        return Response(
+            {"erro": "Campanha não encontrada."},
+            status=status.HTTP_404_NOT_FOUND
+        )
+
+    erro = _exige_mestre_dono(request, campanha)
+
+    if erro:
+        return erro
+
+    try:
+        usuario_pk_int = int(usuario_pk)
+    except (TypeError, ValueError):
+        return Response(
+            {"erro": "Usuário inválido."},
+            status=status.HTTP_400_BAD_REQUEST
+        )
+
+    if usuario_pk_int == campanha.mestre_id:
+        return Response(
+            {"erro": "O mestre já tem todos os poderes sobre a campanha."},
+            status=status.HTTP_400_BAD_REQUEST
+        )
+
+    if not campanha.jogadores.filter(pk=usuario_pk_int).exists():
+        return Response(
+            {"erro": "Este usuário não participa desta campanha."},
+            status=status.HTTP_400_BAD_REQUEST
+        )
+
+    if request.method == "PUT":
+        campanha.moderadores.add(usuario_pk_int)
+    else:
+        campanha.moderadores.remove(usuario_pk_int)
+
+    return Response(CampanhaSerializer(campanha).data, status=status.HTTP_200_OK)
 
 
 @extend_schema(
@@ -604,10 +676,10 @@ def _busca_campanha_do_participante(request, pk):
 
 def _filtra_visiveis(request, campanha, queryset):
     """
-    Mestre (e superuser) enxergam tudo; jogador só enxerga registros com
-    visivel_para_jogadores=True.
+    Mestre/moderador (e superuser) enxergam tudo; jogador comum só enxerga
+    registros com visivel_para_jogadores=True.
     """
-    if request.user.is_superuser or campanha.mestre == request.user:
+    if pode_gerenciar_campanha(campanha, request.user):
         return queryset
 
     return queryset.filter(visivel_para_jogadores=True)
@@ -616,8 +688,7 @@ def _filtra_visiveis(request, campanha, queryset):
 def _exige_mestre(request, campanha):
     """
     Retorna uma Response de erro se o usuário não puder criar/excluir
-    recursos "de mundo" desta campanha (só mestre ou superuser podem).
-    Reaproveitado também por `remover_jogador` acima.
+    recursos "de mundo" desta campanha (mestre, moderador ou superuser).
     """
     if not pode_criar_ou_excluir(request, campanha):
         return Response(
@@ -626,6 +697,23 @@ def _exige_mestre(request, campanha):
         )
 
     return None
+
+
+def _exige_mestre_dono(request, campanha):
+    """
+    Como `_exige_mestre`, mas EXCLUSIVO do mestre-dono — nem moderador nem
+    `pode_criar_ou_excluir` cobrem isso. Reservado para as duas únicas
+    ações que um moderador não pode fazer: remover (expulsar) um jogador
+    (`remover_jogador`) e promover/rebaixar outro moderador
+    (`definir_moderador`).
+    """
+    if request.user.is_superuser or campanha.mestre == request.user:
+        return None
+
+    return Response(
+        {"erro": "Apenas o mestre da campanha pode fazer isso."},
+        status=status.HTTP_403_FORBIDDEN
+    )
 
 
 def _resolve_notavel_object(content_type_model, object_id):
@@ -2189,11 +2277,12 @@ def conexao_lista(request, pk):
             .order_by("-criado_em")
         )
 
-        # Mestre (e superuser) veem tudo; jogador só vê conexões em que AS
-        # DUAS entidades envolvidas são visíveis para ele — reaproveita a
-        # mesma regra de visibilidade (`usuario_pode_ver_objeto`) já usada
-        # para o objeto em si e para Notas, em vez de uma lógica própria.
-        if not (request.user.is_superuser or campanha.mestre == request.user):
+        # Mestre/moderador (e superuser) veem tudo; jogador só vê conexões
+        # em que AS DUAS entidades envolvidas são visíveis para ele —
+        # reaproveita a mesma regra de visibilidade
+        # (`usuario_pode_ver_objeto`) já usada para o objeto em si e para
+        # Notas, em vez de uma lógica própria.
+        if not pode_gerenciar_campanha(campanha, request.user):
             conexoes = [
                 conexao for conexao in conexoes
                 if (conexao.entidade1 is None or usuario_pode_ver_objeto(request.user, conexao.entidade1))
@@ -2265,9 +2354,9 @@ def conexao_detalhe(request, conexao_pk):
 
     if request.method == "GET":
 
-        # Leitura: mestre sempre vê; jogador só se enxergar AMBAS as
-        # entidades (mesma regra usada em `conexao_lista`).
-        e_mestre = request.user.is_superuser or conexao.campanha.mestre == request.user
+        # Leitura: mestre/moderador sempre veem; jogador só se enxergar
+        # AMBAS as entidades (mesma regra usada em `conexao_lista`).
+        e_mestre = pode_gerenciar_campanha(conexao.campanha, request.user)
 
         if not e_mestre:
             e_jogador = conexao.campanha.jogadores.filter(pk=request.user.pk).exists()
@@ -2510,15 +2599,15 @@ def nota_detalhe(request, pk):
     e_autor = nota.usuario == request.user or request.user.is_superuser
 
     # Resolve o objeto anotado uma única vez — usado tanto para checar
-    # visibilidade (GET) quanto para saber se quem está pedindo é o MESTRE
-    # da campanha do objeto (que agora também pode editar/excluir notas de
-    # qualquer jogador, além do próprio autor).
+    # visibilidade (GET) quanto para saber se quem está pedindo é
+    # MESTRE/MODERADOR da campanha do objeto (que também pode editar/
+    # excluir notas de qualquer jogador, além do próprio autor).
     _, objeto = _resolve_notavel_object(nota.content_type.model, nota.object_id)
     e_mestre_do_objeto = False
 
     if objeto is not None and not e_autor:
         campanhas_do_objeto = campanhas_do_objeto_notavel(objeto)
-        e_mestre_do_objeto = any(c.mestre_id == request.user.id for c in campanhas_do_objeto)
+        e_mestre_do_objeto = any(pode_gerenciar_campanha(c, request.user) for c in campanhas_do_objeto)
 
     if request.method == "GET":
 
@@ -3713,8 +3802,8 @@ def comprar_produto_loja(request, produto_pk):
 @permission_classes([IsAuthenticated])
 def transacao_loja_lista(request, pk):
     """
-    Extrato da loja. O mestre vê a mesa inteira; o jogador vê só o que
-    envolve os personagens dele.
+    Extrato da loja. Mestre/moderador veem a mesa inteira; o jogador vê só
+    o que envolve os personagens dele.
     """
     campanha, erro = _busca_campanha_do_participante(request, pk)
 
@@ -3725,7 +3814,7 @@ def transacao_loja_lista(request, pk):
         "comprador_personagem", "vendedor_personagem"
     )
 
-    if not (request.user.is_superuser or campanha.mestre_id == request.user.pk):
+    if not pode_gerenciar_campanha(campanha, request.user):
         meus = list(campanha.personagens.filter(usuario=request.user).values_list("id", flat=True))
         transacoes = transacoes.filter(
             Q(comprador_personagem_id__in=meus) | Q(vendedor_personagem_id__in=meus)

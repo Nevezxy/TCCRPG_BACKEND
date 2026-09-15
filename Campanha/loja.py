@@ -35,6 +35,7 @@ from datetime import timedelta
 from django.utils import timezone
 
 from Midia.services import copiar_ajuste, ler_ajustes, url_de
+from Usuario.permissions import pode_gerenciar_campanha
 
 # ---------------------------------------------------------------------------
 # Identificação das origens
@@ -255,7 +256,7 @@ def montar_vitrine(campanha, usuario, agora=None):
     Número fixo de consultas, independente do tamanho da loja.
     """
     agora = agora or timezone.now()
-    e_mestre = usuario.is_superuser or campanha.mestre_id == usuario.pk
+    e_mestre = pode_gerenciar_campanha(campanha, usuario)
 
     categorias = list(campanha.categorias_loja.all())
     if not e_mestre:
@@ -336,7 +337,7 @@ def produto_a_venda(produto, usuario, campanha, agora=None):
     if not produto.disponivel or produto.esgotado:
         return False
 
-    e_mestre = usuario.is_superuser or campanha.mestre_id == usuario.pk
+    e_mestre = pode_gerenciar_campanha(campanha, usuario)
     categorias = [
         c for c in produto.categorias.all() if e_mestre or c.visivel_para_jogadores
     ]

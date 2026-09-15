@@ -65,6 +65,15 @@ urlpatterns = [
     ),
 
 
+    # Moderadores — só o mestre-dono promove (PUT) ou rebaixa (DELETE) um
+    # jogador da própria campanha (ver `_exige_mestre_dono`).
+    path(
+        "<int:pk>/moderadores/<int:usuario_pk>/",
+        views.definir_moderador,
+        name="definir_moderador"
+    ),
+
+
     # NPCs — lista aninhada em Campanha, detalhe "achatado" (só o id do
     # NPC), no mesmo padrão usado pelos recursos filhos de Personagem
     # (ver createChildResource no frontend). A campanha do NPC é sempre

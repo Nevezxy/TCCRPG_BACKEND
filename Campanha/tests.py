@@ -2391,3 +2391,127 @@ class ComercioLivreTests(LojaBaseTestCase):
         self.assertEqual(do_vendedor.data[0]["tipo"], "comercio_livre")
         self.assertEqual(do_vendedor.data[0]["vendedor_nome"], "Vendedor")
         self.assertEqual(do_vendedor.data[0]["comprador_nome"], "Comprador")
+
+
+# ---------------------------------------------------------------------------
+# Moderador — jogador promovido pelo mestre a "quase-mestre": todos os
+# poderes de mestre sobre a campanha, MENOS excluí-la e remover jogadores.
+# ---------------------------------------------------------------------------
+
+class ModeradorTests(DuasCampanhasTestCase):
+
+    def _promove(self, campanha, usuario):
+        return self.client.put(f"/campanha/{campanha.id}/moderadores/{usuario.id}/")
+
+    def _rebaixa(self, campanha, usuario):
+        return self.client.delete(f"/campanha/{campanha.id}/moderadores/{usuario.id}/")
+
+    def test_mestre_promove_jogador_a_moderador(self):
+        self.autentica_como(self.mestre_a)
+        response = self._promove(self.campanha_a, self.jogador_a)
+
+        self.assertEqual(response.status_code, status.HTTP_200_OK)
+        self.assertIn(self.jogador_a.id, response.data["moderadores"])
+        self.assertTrue(self.campanha_a.moderadores.filter(pk=self.jogador_a.id).exists())
+
+    def test_mestre_rebaixa_moderador(self):
+        self.campanha_a.moderadores.add(self.jogador_a)
+        self.autentica_como(self.mestre_a)
+
+        response = self._rebaixa(self.campanha_a, self.jogador_a)
+
+        self.assertEqual(response.status_code, status.HTTP_200_OK)
+        self.assertFalse(self.campanha_a.moderadores.filter(pk=self.jogador_a.id).exists())
+
+    def test_jogador_comum_nao_promove_a_si_mesmo(self):
+        self.autentica_como(self.jogador_a)
+        response = self._promove(self.campanha_a, self.jogador_a)
+        self.assertEqual(response.status_code, status.HTTP_403_FORBIDDEN)
+
+    def test_moderador_nao_promove_nem_rebaixa_outro_jogador(self):
+        """Regra explícita do requisito: moderador tem os poderes do mestre,
+        MENOS gerenciar cargos de moderador — só o mestre-dono pode."""
+        self.campanha_a.moderadores.add(self.jogador_a)
+        outro = Usuario.objects.create_user(username="jogador_a2", password="SenhaForte123!")
+        self.campanha_a.jogadores.add(outro)
+        self.autentica_como(self.jogador_a)
+
+        promove_outro = self._promove(self.campanha_a, outro)
+        rebaixa_a_si_mesmo = self._rebaixa(self.campanha_a, self.jogador_a)
+
+        self.assertEqual(promove_outro.status_code, status.HTTP_403_FORBIDDEN)
+        self.assertEqual(rebaixa_a_si_mesmo.status_code, status.HTTP_403_FORBIDDEN)
+
+    def test_mestre_de_b_nao_promove_jogador_em_a(self):
+        """IDOR/BOLA: mestre só gerencia cargos na própria campanha."""
+        self.autentica_como(self.mestre_b)
+        response = self._promove(self.campanha_a, self.jogador_a)
+        self.assertEqual(response.status_code, status.HTTP_403_FORBIDDEN)
+
+    def test_moderador_cria_npc_como_um_mestre(self):
+        self.campanha_a.moderadores.add(self.jogador_a)
+        self.autentica_como(self.jogador_a)
+
+        response = self.client.post(
+            f"/campanha/{self.campanha_a.id}/npcs/", {"nome": "Criado pelo moderador"}, format="json"
+        )
+
+        self.assertEqual(response.status_code, status.HTTP_201_CREATED)
+
+    def test_moderador_exclui_npc_como_um_mestre(self):
+        self.campanha_a.moderadores.add(self.jogador_a)
+        self.autentica_como(self.jogador_a)
+
+        response = self.client.delete(f"/campanha/npcs/{self.npc_a1.id}/")
+
+        self.assertEqual(response.status_code, status.HTTP_204_NO_CONTENT)
+
+    def test_moderador_nao_exclui_a_campanha(self):
+        self.campanha_a.moderadores.add(self.jogador_a)
+        self.autentica_como(self.jogador_a)
+
+        response = self.client.delete(f"/campanha/{self.campanha_a.id}/")
+
+        self.assertEqual(response.status_code, status.HTTP_403_FORBIDDEN)
+        self.assertTrue(Campanha.objects.filter(pk=self.campanha_a.id).exists())
+
+    def test_moderador_edita_a_campanha(self):
+        """A única exceção é EXCLUIR — editar nome/descrição continua liberado."""
+        self.campanha_a.moderadores.add(self.jogador_a)
+        self.autentica_como(self.jogador_a)
+
+        response = self.client.patch(f"/campanha/{self.campanha_a.id}/", {"nome": "Novo nome"}, format="json")
+
+        self.assertEqual(response.status_code, status.HTTP_200_OK)
+
+    def test_moderador_nao_remove_jogador(self):
+        self.campanha_a.moderadores.add(self.jogador_a)
+        outro = Usuario.objects.create_user(username="jogador_a2", password="SenhaForte123!")
+        self.campanha_a.jogadores.add(outro)
+        self.autentica_como(self.jogador_a)
+
+        response = self.client.delete(f"/campanha/{self.campanha_a.id}/jogadores/{outro.id}/")
+
+        self.assertEqual(response.status_code, status.HTTP_403_FORBIDDEN)
+        self.assertTrue(self.campanha_a.jogadores.filter(pk=outro.id).exists())
+
+    def test_remover_jogador_tambem_remove_a_moderacao(self):
+        self.campanha_a.moderadores.add(self.jogador_a)
+        self.autentica_como(self.mestre_a)
+
+        response = self.client.delete(f"/campanha/{self.campanha_a.id}/jogadores/{self.jogador_a.id}/")
+
+        self.assertEqual(response.status_code, status.HTTP_200_OK)
+        self.assertFalse(self.campanha_a.jogadores.filter(pk=self.jogador_a.id).exists())
+        self.assertFalse(self.campanha_a.moderadores.filter(pk=self.jogador_a.id).exists())
+
+    def test_moderador_ve_categoria_escondida_da_loja(self):
+        """Mestre/moderador enxergam categorias fora de `visivel_para_jogadores`."""
+        CategoriaLoja.objects.create(campanha=self.campanha_a, nome="Rascunho", visivel_para_jogadores=False)
+        self.campanha_a.moderadores.add(self.jogador_a)
+        self.autentica_como(self.jogador_a)
+
+        response = self.client.get(f"/campanha/{self.campanha_a.id}/loja/")
+
+        nomes = [c["nome"] for c in response.data["categorias"]]
+        self.assertIn("Rascunho", nomes)

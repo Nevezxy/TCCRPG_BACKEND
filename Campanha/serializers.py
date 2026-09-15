@@ -151,6 +151,7 @@ class CampanhaSerializer(SincronizaSistemasMixin, CloudinaryUrlSerializerMixin, 
 
     mestre_info = serializers.SerializerMethodField()
     jogadores_info = serializers.SerializerMethodField()
+    moderadores_info = serializers.SerializerMethodField()
     personagens_info = serializers.SerializerMethodField()
 
     class Meta:
@@ -158,6 +159,12 @@ class CampanhaSerializer(SincronizaSistemasMixin, CloudinaryUrlSerializerMixin, 
         fields = "__all__"
         read_only_fields = (
             "mestre",
+            # `moderadores` só muda via endpoint dedicado, exclusivo do
+            # mestre-dono (ver `Campanha/views.py::definir_moderador`) — se
+            # ficasse gravável aqui, um moderador (que já pode fazer
+            # PATCH/PUT na campanha, ver `IsOwnerOrAdmin`) conseguiria se
+            # autopromover ou promover/remover qualquer outro moderador.
+            "moderadores",
             "codigo",
             "criado_em",
             "atualizado_em",
@@ -168,6 +175,9 @@ class CampanhaSerializer(SincronizaSistemasMixin, CloudinaryUrlSerializerMixin, 
 
     def get_jogadores_info(self, obj):
         return UsuarioResumoSerializer(obj.jogadores.all(), many=True).data
+
+    def get_moderadores_info(self, obj):
+        return UsuarioResumoSerializer(obj.moderadores.all(), many=True).data
 
     def get_personagens_info(self, obj):
         return CampanhaPersonagemResumoSerializer(

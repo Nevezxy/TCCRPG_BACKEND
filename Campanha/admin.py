@@ -48,7 +48,7 @@ class CampanhaAdmin(admin.ModelAdmin):
     list_filter = ("criado_em",)
     search_fields = ("nome", "codigo", "mestre__username")
     autocomplete_fields = ["mestre"]
-    filter_horizontal = ("jogadores", "personagens", "sistemas")
+    filter_horizontal = ("jogadores", "moderadores", "personagens", "sistemas")
     readonly_fields = ("codigo", "criado_em", "atualizado_em")
 
     @admin.display(description="Jogadores")
