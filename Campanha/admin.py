@@ -20,6 +20,9 @@ from .models import (
     Criatura,
     Divindade,
     Raca,
+    ItemCampanha,
+    ArmaCampanha,
+    ArmaduraCampanha,
 )
 
 
@@ -275,3 +278,26 @@ class DivindadeAdmin(EntidadeMundoAdmin):
 class RacaAdmin(EntidadeMundoAdmin):
     list_display = EntidadeMundoAdmin.list_display + ("tipo", "tamanho")
     list_filter = EntidadeMundoAdmin.list_filter + ("tamanho",)
+
+
+# ---------------------------------------------------------------------------
+# Equipamentos exclusivos da campanha — também são entidades de mundo, então
+# reaproveitam a mesma base; cada um só acrescenta as colunas de jogo.
+# ---------------------------------------------------------------------------
+
+@admin.register(ItemCampanha)
+class ItemCampanhaAdmin(EntidadeMundoAdmin):
+    list_display = EntidadeMundoAdmin.list_display + ("peso", "valor", "qualidade")
+    list_filter = EntidadeMundoAdmin.list_filter + ("qualidade",)
+
+
+@admin.register(ArmaCampanha)
+class ArmaCampanhaAdmin(EntidadeMundoAdmin):
+    list_display = EntidadeMundoAdmin.list_display + ("dano", "tipo_dano", "valor")
+    list_filter = EntidadeMundoAdmin.list_filter + ("qualidade", "empunhadura")
+
+
+@admin.register(ArmaduraCampanha)
+class ArmaduraCampanhaAdmin(EntidadeMundoAdmin):
+    list_display = EntidadeMundoAdmin.list_display + ("defesa", "peso", "valor")
+    list_filter = EntidadeMundoAdmin.list_filter + ("qualidade",)

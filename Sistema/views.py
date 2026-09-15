@@ -5,6 +5,7 @@ from rest_framework.permissions import IsAuthenticated
 from rest_framework.response import Response
 from rest_framework import status
 
+from Midia.services import copiar_ajuste
 from Personagem.models import Arma, Armadura, Habilidade, Item, Personagem, Poder
 from Sistema.models import *
 from Sistema.serializers import *
@@ -60,6 +61,17 @@ def poder_sistema_lista(request, sistema_id):
     return Response(serializer.data)
 
 
+# ---------------------------------------------------------------------------
+# Cópia biblioteca → ficha
+#
+# As cópias levam a IMAGEM junto (o mesmo `public_id`, não um upload novo) e
+# o enquadramento escolhido — sem isso o item chegaria na ficha sem foto, e
+# o jogador teria que reenviar a mesma arte.
+#
+# Os campos de imagem da ficha (`Item.foto`, `Poder.midia`) não aceitam NULL,
+# por isso o `or ""` em vez de repassar `None` direto.
+# ---------------------------------------------------------------------------
+
 @extend_schema(
     methods=["POST"],
     operation_id="copiar_poder_sistema",
@@ -92,11 +104,14 @@ def copiar_poder_sistema(request, personagem_id, pk):
 
     poder = Poder.objects.create(
         personagem=personagem,
+        midia=poder_sistema.midia or "",
         tag=poder_sistema.tag,
         nome=poder_sistema.nome,
         descricao=poder_sistema.descricao,
         custo=poder_sistema.custo,
     )
+
+    copiar_ajuste(poder_sistema, poder, ["midia"])
 
     serializer = PoderSerializer(poder)
 
@@ -240,6 +255,7 @@ def copiar_item_sistema(request, personagem_id, item_id):
 
     item = Item.objects.create(
         personagem=personagem,
+        foto=item_sistema.foto or "",
         nome=item_sistema.nome,
         descricao=item_sistema.descricao,
         peso=item_sistema.peso,
@@ -247,6 +263,8 @@ def copiar_item_sistema(request, personagem_id, item_id):
         qualidade=item_sistema.qualidade,
     )
 
+
+    copiar_ajuste(item_sistema, item, ["foto"])
 
     serializer = ItemSerializer(item)
 
@@ -325,6 +343,7 @@ def copiar_arma_sistema(request, personagem_id, arma_id):
 
     arma = Arma.objects.create(
         personagem=personagem,
+        foto=arma_sistema.foto or "",
         nome=arma_sistema.nome,
         descricao=arma_sistema.descricao,
         peso=arma_sistema.peso,
@@ -340,6 +359,8 @@ def copiar_arma_sistema(request, personagem_id, arma_id):
         empunhadura=arma_sistema.empunhadura,
     )
 
+
+    copiar_ajuste(arma_sistema, arma, ["foto"])
 
     serializer = ArmaSerializer(arma)
 
@@ -418,6 +439,7 @@ def copiar_armadura_sistema(request, personagem_id, armadura_id):
 
     armadura = Armadura.objects.create(
         personagem=personagem,
+        foto=armadura_sistema.foto or "",
         nome=armadura_sistema.nome,
         descricao=armadura_sistema.descricao,
         peso=armadura_sistema.peso,
@@ -426,6 +448,8 @@ def copiar_armadura_sistema(request, personagem_id, armadura_id):
         defesa=armadura_sistema.defesa,
     )
 
+
+    copiar_ajuste(armadura_sistema, armadura, ["foto"])
 
     serializer = ArmaduraSerializer(armadura)
 
@@ -504,6 +528,7 @@ def copiar_habilidade_sistema(request, personagem_id, habilidade_id):
 
     habilidade = Habilidade.objects.create(
         personagem=personagem,
+        midia=habilidade_sistema.midia or "",
         tag=habilidade_sistema.tag,
         nome=habilidade_sistema.nome,
         descricao=habilidade_sistema.descricao,
@@ -516,6 +541,8 @@ def copiar_habilidade_sistema(request, personagem_id, habilidade_id):
         resistencia=habilidade_sistema.resistencia,
     )
 
+
+    copiar_ajuste(habilidade_sistema, habilidade, ["midia"])
 
     serializer = HabilidadeSerializer(habilidade)
 

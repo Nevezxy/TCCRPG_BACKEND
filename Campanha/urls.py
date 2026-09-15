@@ -351,6 +351,160 @@ urlpatterns = [
         name="raca_conexoes"
     ),
 
+    # ------------------------------------------------------------------
+    # Equipamentos exclusivos da campanha — entidades de mundo como as
+    # demais (mesma fábrica `_crud_mundo`), mais as rotas de cópia para a
+    # ficha, no mesmo molde das cópias do app Sistema.
+    # ------------------------------------------------------------------
+    # Itens da campanha
+    path(
+        "<int:pk>/itens-campanha/",
+        views.itemcampanha_lista,
+        name="itemcampanha_lista"
+    ),
+
+    path(
+        "itens-campanha/<int:obj_pk>/",
+        views.itemcampanha_detalhe,
+        name="itemcampanha_detalhe"
+    ),
+
+    path(
+        "itens-campanha/<int:obj_pk>/conexoes/",
+        views.itemcampanha_conexoes,
+        name="itemcampanha_conexoes"
+    ),
+
+    path(
+        "personagens/<int:personagem_id>/itens-campanha/<int:item_id>/copiar/",
+        views.copiar_item_campanha,
+        name="copiar_item_campanha"
+    ),
+
+    # Armas da campanha
+    path(
+        "<int:pk>/armas-campanha/",
+        views.armacampanha_lista,
+        name="armacampanha_lista"
+    ),
+
+    path(
+        "armas-campanha/<int:obj_pk>/",
+        views.armacampanha_detalhe,
+        name="armacampanha_detalhe"
+    ),
+
+    path(
+        "armas-campanha/<int:obj_pk>/conexoes/",
+        views.armacampanha_conexoes,
+        name="armacampanha_conexoes"
+    ),
+
+    path(
+        "personagens/<int:personagem_id>/armas-campanha/<int:arma_id>/copiar/",
+        views.copiar_arma_campanha,
+        name="copiar_arma_campanha"
+    ),
+
+    # Armaduras da campanha
+    path(
+        "<int:pk>/armaduras-campanha/",
+        views.armaduracampanha_lista,
+        name="armaduracampanha_lista"
+    ),
+
+    path(
+        "armaduras-campanha/<int:obj_pk>/",
+        views.armaduracampanha_detalhe,
+        name="armaduracampanha_detalhe"
+    ),
+
+    path(
+        "armaduras-campanha/<int:obj_pk>/conexoes/",
+        views.armaduracampanha_conexoes,
+        name="armaduracampanha_conexoes"
+    ),
+
+    path(
+        "personagens/<int:personagem_id>/armaduras-campanha/<int:armadura_id>/copiar/",
+        views.copiar_armadura_campanha,
+        name="copiar_armadura_campanha"
+    ),
+
+
+    # ------------------------------------------------------------------
+    # Loja da campanha — categorias e produtos são do mestre; a vitrine
+    # (já com a rotação aplicada no servidor) é de qualquer participante.
+    # ------------------------------------------------------------------
+    path(
+        "<int:pk>/loja/",
+        views.loja_vitrine,
+        name="loja_vitrine"
+    ),
+
+    path(
+        "<int:pk>/loja/disponiveis/",
+        views.loja_disponiveis,
+        name="loja_disponiveis"
+    ),
+
+    path(
+        "<int:pk>/loja/categorias/",
+        views.categoria_loja_lista,
+        name="categoria_loja_lista"
+    ),
+
+    path(
+        "loja/categorias/<int:categoria_pk>/",
+        views.categoria_loja_detalhe,
+        name="categoria_loja_detalhe"
+    ),
+
+    path(
+        "<int:pk>/loja/produtos/",
+        views.produto_loja_lista,
+        name="produto_loja_lista"
+    ),
+
+    path(
+        "loja/produtos/<int:produto_pk>/",
+        views.produto_loja_detalhe,
+        name="produto_loja_detalhe"
+    ),
+
+    path(
+        "loja/produtos/<int:produto_pk>/comprar/",
+        views.comprar_produto_loja,
+        name="comprar_produto_loja"
+    ),
+
+    path(
+        "<int:pk>/loja/transacoes/",
+        views.transacao_loja_lista,
+        name="transacao_loja_lista"
+    ),
+
+
+    # Comércio Livre — jogadores vendendo entre si.
+    path(
+        "<int:pk>/comercio/anuncios/",
+        views.anuncio_lista,
+        name="anuncio_lista"
+    ),
+
+    path(
+        "comercio/anuncios/<int:anuncio_pk>/",
+        views.anuncio_detalhe,
+        name="anuncio_detalhe"
+    ),
+
+    path(
+        "comercio/anuncios/<int:anuncio_pk>/comprar/",
+        views.comprar_anuncio,
+        name="comprar_anuncio"
+    ),
+
+
     # Pastas — árvore de organização estilo Obsidian (seção 3)
     path(
         "<int:pk>/pastas/",

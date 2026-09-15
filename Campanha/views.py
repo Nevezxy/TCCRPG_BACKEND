@@ -7,10 +7,14 @@ from rest_framework.response import Response
 
 from cloudinary.models import CloudinaryField
 
-from Personagem.models import Personagem
-from Personagem.serializers import PersonagemSerializer
+from Midia.services import copiar_ajuste
+from Personagem.models import Arma, Armadura, Item, Personagem
+from Personagem.serializers import ArmaSerializer, ArmaduraSerializer, ItemSerializer, PersonagemSerializer
 
 from django.contrib.contenttypes.models import ContentType
+from decimal import Decimal, InvalidOperation
+
+from django.db import IntegrityError, transaction
 from django.db.models import Q
 
 from .models import (
@@ -33,9 +37,18 @@ from .models import (
     Criatura,
     Divindade,
     Raca,
+    ItemCampanha,
+    ArmaCampanha,
+    ArmaduraCampanha,
+    CategoriaLoja,
+    ProdutoLoja,
+    TransacaoLoja,
+    AnuncioComercioLivre,
+    modelos_vendaveis,
 )
 from Usuario.permissions import check_object_permission, pode_criar_ou_excluir, usuario_pode_ver_objeto
 from .escudo import montar_snapshot
+from . import comercio, loja
 from .serializers import (
     CampanhaSerializer,
     NPCSerializer,
@@ -56,6 +69,13 @@ from .serializers import (
     CriaturaSerializer,
     DivindadeSerializer,
     RacaSerializer,
+    ItemCampanhaSerializer,
+    ArmaCampanhaSerializer,
+    ArmaduraCampanhaSerializer,
+    CategoriaLojaSerializer,
+    ProdutoLojaSerializer,
+    TransacaoLojaSerializer,
+    AnuncioComercioLivreSerializer,
     campanhas_do_objeto_notavel,
     conexoes_de_entidade,
 )
@@ -2576,6 +2596,9 @@ _BUSCA_MODELOS = [
     ("criatura", Criatura, "nome"),
     ("divindade", Divindade, "nome"),
     ("raca", Raca, "nome"),
+    ("itemcampanha", ItemCampanha, "nome"),
+    ("armacampanha", ArmaCampanha, "nome"),
+    ("armaduracampanha", ArmaduraCampanha, "nome"),
 ]
 
 
@@ -2693,6 +2716,9 @@ _SERIALIZER_POR_TIPO = {
     "criatura": CriaturaSerializer,
     "divindade": DivindadeSerializer,
     "raca": RacaSerializer,
+    "itemcampanha": ItemCampanhaSerializer,
+    "armacampanha": ArmaCampanhaSerializer,
+    "armaduracampanha": ArmaduraCampanhaSerializer,
 }
 
 # tipo -> (Modelo, SerializerClass, campo_titulo)
@@ -3016,3 +3042,786 @@ divindade_lista, divindade_detalhe, divindade_conexoes = _crud_mundo(
 raca_lista, raca_detalhe, raca_conexoes = _crud_mundo(
     "raca", "racas", Raca, RacaSerializer, "Raça"
 )
+itemcampanha_lista, itemcampanha_detalhe, itemcampanha_conexoes = _crud_mundo(
+    "itemcampanha", "itens_campanha", ItemCampanha, ItemCampanhaSerializer, "Item da campanha"
+)
+armacampanha_lista, armacampanha_detalhe, armacampanha_conexoes = _crud_mundo(
+    "armacampanha", "armas_campanha", ArmaCampanha, ArmaCampanhaSerializer, "Arma da campanha"
+)
+armaduracampanha_lista, armaduracampanha_detalhe, armaduracampanha_conexoes = _crud_mundo(
+    "armaduracampanha", "armaduras_campanha", ArmaduraCampanha, ArmaduraCampanhaSerializer, "Armadura da campanha"
+)
+
+
+# ---------------------------------------------------------------------------
+# Cópia equipamento da campanha -> ficha
+#
+# Mesmo contrato das cópias do app Sistema (`Sistema/views.py`): o item
+# ORIGINAL nunca é tocado, a imagem vai por referência (mesmo public_id) com
+# o enquadramento junto, e a ficha recebe uma linha nova e independente.
+#
+# A diferença é a checagem extra de escopo: além de poder editar a ficha, o
+# personagem precisa PARTICIPAR da campanha dona do equipamento — sem isso,
+# qualquer um com um id em mãos copiaria itens de uma campanha que não é
+# sua. Jogador também só copia o que enxerga (`visivel_para_jogadores`).
+# ---------------------------------------------------------------------------
+
+_MODELO_EQUIPAMENTO = {
+    "item": (ItemCampanha, "Item"),
+    "arma": (ArmaCampanha, "Arma"),
+    "armadura": (ArmaduraCampanha, "Armadura"),
+}
+
+
+def _copiar_equipamento_campanha(request, personagem_id, equipamento_id, tipo):
+    modelo, rotulo = _MODELO_EQUIPAMENTO[tipo]
+
+    try:
+        personagem = Personagem.objects.get(pk=personagem_id)
+    except Personagem.DoesNotExist:
+        return Response({"erro": "Personagem não encontrado."}, status=status.HTTP_404_NOT_FOUND)
+
+    check_object_permission(request, personagem)
+
+    try:
+        origem = modelo.objects.select_related("campanha").get(pk=equipamento_id)
+    except modelo.DoesNotExist:
+        return Response({"erro": f"{rotulo} não encontrado(a)."}, status=status.HTTP_404_NOT_FOUND)
+
+    # Copiar exige ENXERGAR o equipamento, não editá-lo — por isso
+    # `usuario_pode_ver_objeto` (que ignora o método HTTP) e não
+    # `check_object_permission`: esta requisição é um POST, e para a
+    # permission um POST sobre um objeto de mundo existente é coisa de
+    # mestre. A regra de visibilidade aplicada é a mesma das listagens
+    # (mestre vê tudo; jogador só o que é `visivel_para_jogadores`).
+    if not usuario_pode_ver_objeto(request.user, origem):
+        return Response(
+            {"erro": "Você não tem acesso a este equipamento."},
+            status=status.HTTP_403_FORBIDDEN,
+        )
+
+    if not personagem.campanhas.filter(pk=origem.campanha_id).exists():
+        return Response(
+            {"erro": "Este personagem não participa da campanha deste equipamento."},
+            status=status.HTTP_403_FORBIDDEN,
+        )
+
+    copia = loja.copiar_para_ficha(origem, personagem)
+
+    return Response(
+        loja.serializer_da_ficha(loja.classe_de(origem))(copia).data,
+        status=status.HTTP_201_CREATED,
+    )
+
+
+@extend_schema(methods=["POST"], operation_id="copiar_item_campanha", request=None, responses=ItemSerializer)
+@api_view(["POST"])
+@permission_classes([IsAuthenticated])
+def copiar_item_campanha(request, personagem_id, item_id):
+    return _copiar_equipamento_campanha(request, personagem_id, item_id, "item")
+
+
+@extend_schema(methods=["POST"], operation_id="copiar_arma_campanha", request=None, responses=ArmaSerializer)
+@api_view(["POST"])
+@permission_classes([IsAuthenticated])
+def copiar_arma_campanha(request, personagem_id, arma_id):
+    return _copiar_equipamento_campanha(request, personagem_id, arma_id, "arma")
+
+
+@extend_schema(methods=["POST"], operation_id="copiar_armadura_campanha", request=None, responses=ArmaduraSerializer)
+@api_view(["POST"])
+@permission_classes([IsAuthenticated])
+def copiar_armadura_campanha(request, personagem_id, armadura_id):
+    return _copiar_equipamento_campanha(request, personagem_id, armadura_id, "armadura")
+
+
+# ---------------------------------------------------------------------------
+# Loja da campanha
+#
+# Categorias e produtos são administrados SÓ pelo mestre; os jogadores
+# consomem a vitrine (`loja_vitrine`), que já vem com a seleção da rotação
+# aplicada. Por isso a listagem de produtos é do mestre: ela mostra o
+# estoque inteiro, inclusive o que está fora de venda — não é o que o
+# jogador deve ver.
+# ---------------------------------------------------------------------------
+
+@extend_schema(
+    methods=["GET"], operation_id="listar_categorias_loja", responses=CategoriaLojaSerializer(many=True)
+)
+@extend_schema(
+    methods=["POST"],
+    operation_id="criar_categoria_loja",
+    request=CategoriaLojaSerializer,
+    responses=CategoriaLojaSerializer,
+)
+@api_view(["GET", "POST"])
+@permission_classes([IsAuthenticated])
+def categoria_loja_lista(request, pk):
+
+    campanha, erro = _busca_campanha_do_participante(request, pk)
+
+    if erro:
+        return erro
+
+    if request.method == "GET":
+        categorias = _filtra_visiveis(request, campanha, campanha.categorias_loja.all())
+
+        return Response(CategoriaLojaSerializer(categorias, many=True).data)
+
+    erro = _exige_mestre(request, campanha)
+
+    if erro:
+        return erro
+
+    serializer = CategoriaLojaSerializer(data=request.data, context={"campanha": campanha, "request": request})
+
+    if serializer.is_valid():
+        categoria = serializer.save(campanha=campanha)
+
+        return Response(CategoriaLojaSerializer(categoria).data, status=status.HTTP_201_CREATED)
+
+    return Response(serializer.errors, status=status.HTTP_400_BAD_REQUEST)
+
+
+@extend_schema(methods=["GET"], operation_id="detalhar_categoria_loja", responses=CategoriaLojaSerializer)
+@extend_schema(
+    methods=["PUT"],
+    operation_id="atualizar_categoria_loja",
+    request=CategoriaLojaSerializer,
+    responses=CategoriaLojaSerializer,
+)
+@extend_schema(
+    methods=["PATCH"],
+    operation_id="atualizar_parcial_categoria_loja",
+    request=CategoriaLojaSerializer,
+    responses=CategoriaLojaSerializer,
+)
+@extend_schema(methods=["DELETE"], operation_id="remover_categoria_loja", responses=None)
+@api_view(["GET", "PUT", "PATCH", "DELETE"])
+@permission_classes([IsAuthenticated])
+def categoria_loja_detalhe(request, categoria_pk):
+
+    try:
+        categoria = CategoriaLoja.objects.select_related("campanha").get(pk=categoria_pk)
+
+    except CategoriaLoja.DoesNotExist:
+        return Response({"erro": "Categoria não encontrada."}, status=status.HTTP_404_NOT_FOUND)
+
+    check_object_permission(request, categoria)
+
+    if request.method == "GET":
+        return Response(CategoriaLojaSerializer(categoria).data)
+
+    erro = _exige_mestre(request, categoria.campanha)
+
+    if erro:
+        return erro
+
+    if request.method in ("PUT", "PATCH"):
+        serializer = CategoriaLojaSerializer(
+            categoria,
+            data=request.data,
+            partial=request.method == "PATCH",
+            context={"campanha": categoria.campanha, "request": request},
+        )
+
+        if serializer.is_valid():
+            serializer.save()
+            return Response(serializer.data)
+
+        return Response(serializer.errors, status=status.HTTP_400_BAD_REQUEST)
+
+    # Excluir a categoria NÃO exclui os produtos: eles continuam na loja,
+    # só ficam sem prateleira (o M2M some junto com a categoria).
+    categoria.delete()
+
+    return Response({"mensagem": "Categoria removida com sucesso."}, status=status.HTTP_204_NO_CONTENT)
+
+
+@extend_schema(methods=["GET"], operation_id="listar_produtos_loja", responses=ProdutoLojaSerializer(many=True))
+@extend_schema(
+    methods=["POST"],
+    operation_id="criar_produto_loja",
+    request=ProdutoLojaSerializer,
+    responses=ProdutoLojaSerializer,
+)
+@api_view(["GET", "POST"])
+@permission_classes([IsAuthenticated])
+def produto_loja_lista(request, pk):
+
+    campanha, erro = _busca_campanha_do_participante(request, pk)
+
+    if erro:
+        return erro
+
+    # Gestão do estoque — inclusive o que está fora de venda. O jogador usa
+    # `loja_vitrine`, que só mostra o que está à venda agora.
+    erro = _exige_mestre(request, campanha)
+
+    if erro:
+        return erro
+
+    if request.method == "GET":
+        produtos = campanha.produtos_loja.select_related("content_type").prefetch_related("categorias")
+
+        return Response(ProdutoLojaSerializer(produtos, many=True).data)
+
+    serializer = ProdutoLojaSerializer(data=request.data, context={"campanha": campanha, "request": request})
+
+    if serializer.is_valid():
+        try:
+            produto = serializer.save(campanha=campanha)
+        except IntegrityError:
+            # A UniqueConstraint (campanha, content_type, object_id) — dois
+            # cliques no mesmo "Adicionar" chegam aqui.
+            return Response(
+                {"origem_id": ["Este equipamento já está na loja desta campanha."]},
+                status=status.HTTP_400_BAD_REQUEST,
+            )
+
+        return Response(ProdutoLojaSerializer(produto).data, status=status.HTTP_201_CREATED)
+
+    return Response(serializer.errors, status=status.HTTP_400_BAD_REQUEST)
+
+
+@extend_schema(methods=["GET"], operation_id="detalhar_produto_loja", responses=ProdutoLojaSerializer)
+@extend_schema(
+    methods=["PUT"],
+    operation_id="atualizar_produto_loja",
+    request=ProdutoLojaSerializer,
+    responses=ProdutoLojaSerializer,
+)
+@extend_schema(
+    methods=["PATCH"],
+    operation_id="atualizar_parcial_produto_loja",
+    request=ProdutoLojaSerializer,
+    responses=ProdutoLojaSerializer,
+)
+@extend_schema(methods=["DELETE"], operation_id="remover_produto_loja", responses=None)
+@api_view(["GET", "PUT", "PATCH", "DELETE"])
+@permission_classes([IsAuthenticated])
+def produto_loja_detalhe(request, produto_pk):
+
+    try:
+        produto = ProdutoLoja.objects.select_related("campanha", "content_type").get(pk=produto_pk)
+
+    except ProdutoLoja.DoesNotExist:
+        return Response({"erro": "Produto não encontrado."}, status=status.HTTP_404_NOT_FOUND)
+
+    erro = _exige_mestre(request, produto.campanha)
+
+    if erro:
+        return erro
+
+    if request.method == "GET":
+        return Response(ProdutoLojaSerializer(produto).data)
+
+    if request.method in ("PUT", "PATCH"):
+        serializer = ProdutoLojaSerializer(
+            produto,
+            data=request.data,
+            partial=request.method == "PATCH",
+            context={"campanha": produto.campanha, "request": request},
+        )
+
+        if serializer.is_valid():
+            serializer.save()
+            return Response(serializer.data)
+
+        return Response(serializer.errors, status=status.HTTP_400_BAD_REQUEST)
+
+    produto.delete()
+
+    return Response({"mensagem": "Produto removido da loja."}, status=status.HTTP_204_NO_CONTENT)
+
+
+@extend_schema(methods=["GET"], operation_id="vitrine_loja", responses=None)
+@api_view(["GET"])
+@permission_classes([IsAuthenticated])
+def loja_vitrine(request, pk):
+    """
+    A loja pronta para exibir, com a rotação de cada categoria já aplicada
+    pelo SERVIDOR — é o que garante que a mesa inteira vê a mesma seleção.
+    `proxima_rotacao_em` diz quando ela muda, para o cliente agendar um
+    único refetch em vez de ficar perguntando.
+    """
+    campanha, erro = _busca_campanha_do_participante(request, pk)
+
+    if erro:
+        return erro
+
+    return Response(loja.montar_vitrine(campanha, request.user))
+
+
+@extend_schema(methods=["GET"], operation_id="equipamentos_disponiveis_loja", responses=None)
+@api_view(["GET"])
+@permission_classes([IsAuthenticated])
+def loja_disponiveis(request, pk):
+    """
+    O que o mestre PODE colocar à venda: os equipamentos das bibliotecas de
+    regras da campanha mais os exclusivos dela — as mesmas seis origens que
+    o serializer aceita, listadas com a mesma regra de escopo, para o
+    formulário nunca oferecer algo que a validação recusaria.
+
+    `ja_na_loja` evita o vaivém de tentar adicionar um item repetido.
+    """
+    campanha, erro = _busca_campanha_do_participante(request, pk)
+
+    if erro:
+        return erro
+
+    erro = _exige_mestre(request, campanha)
+
+    if erro:
+        return erro
+
+    sistemas_ids = list(campanha.sistemas.values_list("id", flat=True))
+
+    objetos = []
+    for modelo in modelos_vendaveis():
+        if hasattr(modelo, "campanha"):
+            objetos.extend(modelo.objects.filter(campanha=campanha))
+        elif sistemas_ids:
+            objetos.extend(modelo.objects.filter(sistema_id__in=sistemas_ids))
+
+    ja_na_loja = {
+        (ct.model, object_id)
+        for ct, object_id in (
+            (p.content_type, p.object_id)
+            for p in campanha.produtos_loja.select_related("content_type")
+        )
+    }
+
+    resumos = loja.resumos_de_origens(objetos)
+
+    return Response([
+        {**resumo, "ja_na_loja": chave in ja_na_loja}
+        for chave, resumo in sorted(resumos.items(), key=lambda par: (par[1]["classe"], par[1]["nome"]))
+    ])
+
+
+# ---------------------------------------------------------------------------
+# Compra na loja do mestre
+# ---------------------------------------------------------------------------
+
+def _personagem_da_compra(request, campanha):
+    """
+    Resolve e autoriza o personagem que vai comprar. Devolve
+    (personagem, None) ou (None, Response).
+
+    `check_object_permission` aqui é a regra certa (diferente da cópia da
+    biblioteca, que é leitura): comprar ALTERA a ficha — desconta dinheiro e
+    acrescenta item —, então quem pode fazer isso é o dono da ficha ou o
+    mestre da mesa, exatamente o que a permission já define.
+    """
+    personagem_id = request.data.get("personagem")
+
+    try:
+        personagem = Personagem.objects.get(pk=personagem_id)
+    except (Personagem.DoesNotExist, ValueError, TypeError):
+        return None, Response({"personagem": ["Personagem não encontrado."]}, status=status.HTTP_400_BAD_REQUEST)
+
+    check_object_permission(request, personagem)
+
+    if not campanha.personagens.filter(pk=personagem.pk).exists():
+        return None, Response(
+            {"personagem": ["Este personagem não participa desta campanha."]},
+            status=status.HTTP_400_BAD_REQUEST,
+        )
+
+    return personagem, None
+
+
+def _quantidade_pedida(request):
+    try:
+        quantidade = int(request.data.get("quantidade", 1))
+    except (TypeError, ValueError):
+        return None, Response({"quantidade": ["Quantidade inválida."]}, status=status.HTTP_400_BAD_REQUEST)
+
+    if quantidade < 1:
+        return None, Response(
+            {"quantidade": ["A quantidade precisa ser pelo menos 1."]}, status=status.HTTP_400_BAD_REQUEST
+        )
+
+    return quantidade, None
+
+
+@extend_schema(
+    methods=["POST"],
+    operation_id="comprar_produto_loja",
+    request={
+        "application/json": {
+            "type": "object",
+            "properties": {
+                "personagem": {"type": "integer"},
+                "quantidade": {"type": "integer"},
+                "chave_idempotencia": {"type": "string"},
+            },
+            "required": ["personagem"],
+        }
+    },
+    responses=TransacaoLojaSerializer,
+)
+@api_view(["POST"])
+@permission_classes([IsAuthenticated])
+def comprar_produto_loja(request, produto_pk):
+    """
+    Compra de um produto da loja do mestre.
+
+    Tudo o que pode dar errado é checado DENTRO da transação, com as linhas
+    do produto e do personagem travadas (`select_for_update`): é o que
+    impede dois cliques simultâneos de comprarem o mesmo último item ou de
+    gastarem o mesmo dinheiro duas vezes. Fora da transação, entre o "tem
+    saldo?" e o "desconta", cabe outra requisição inteira.
+
+    A checagem de rotação não é decorativa: sem ela bastaria guardar o id de
+    um produto e comprá-lo enquanto a rotação o esconde, o que esvaziaria a
+    rotação como mecânica — e é exatamente o tipo de coisa que o cliente não
+    pode decidir.
+    """
+    try:
+        produto = ProdutoLoja.objects.select_related("campanha").get(pk=produto_pk)
+    except ProdutoLoja.DoesNotExist:
+        return Response({"erro": "Produto não encontrado."}, status=status.HTTP_404_NOT_FOUND)
+
+    campanha, erro = _busca_campanha_do_participante(request, produto.campanha_id)
+
+    if erro:
+        return erro
+
+    personagem, erro = _personagem_da_compra(request, campanha)
+
+    if erro:
+        return erro
+
+    quantidade, erro = _quantidade_pedida(request)
+
+    if erro:
+        return erro
+
+    chave = (request.data.get("chave_idempotencia") or "").strip() or None
+
+    if chave:
+        # Retry de rede, duplo toque, reenvio depois de reconectar: a compra
+        # já aconteceu, devolve a mesma transação em vez de cobrar de novo.
+        ja_feita = TransacaoLoja.objects.filter(chave_idempotencia=chave).first()
+        if ja_feita is not None:
+            return Response(TransacaoLojaSerializer(ja_feita).data, status=status.HTTP_200_OK)
+
+    try:
+        with transaction.atomic():
+            produto = (
+                ProdutoLoja.objects.select_for_update()
+                .select_related("content_type")
+                .get(pk=produto.pk)
+            )
+            personagem = Personagem.objects.select_for_update().get(pk=personagem.pk)
+
+            origem = produto.origem
+
+            if origem is None:
+                return Response(
+                    {"erro": "O equipamento deste produto não existe mais."},
+                    status=status.HTTP_409_CONFLICT,
+                )
+
+            if not loja.produto_a_venda(produto, request.user, campanha):
+                return Response(
+                    {"erro": "Este produto não está à venda no momento."},
+                    status=status.HTTP_409_CONFLICT,
+                )
+
+            if produto.quantidade_disponivel is not None and produto.quantidade_disponivel < quantidade:
+                return Response(
+                    {
+                        "erro": "Não há essa quantidade disponível.",
+                        "quantidade_disponivel": produto.quantidade_disponivel,
+                    },
+                    status=status.HTTP_409_CONFLICT,
+                )
+
+            total = produto.preco * quantidade
+
+            # ATENÇÃO: daqui para cima só há LEITURA. Um `return` dentro de
+            # `atomic()` não desfaz nada (não há exceção), então toda recusa
+            # precisa acontecer ANTES da primeira gravação abaixo — se um dia
+            # entrar uma validação nova, ela vem para cá, não para depois.
+            if personagem.dinheiro < total:
+                return Response(
+                    {
+                        "erro": "Dinheiro insuficiente.",
+                        "necessario": str(total),
+                        "disponivel": str(personagem.dinheiro),
+                    },
+                    status=status.HTTP_400_BAD_REQUEST,
+                )
+
+            personagem.dinheiro = personagem.dinheiro - total
+            personagem.save(update_fields=["dinheiro"])
+
+            if produto.quantidade_disponivel is not None:
+                produto.quantidade_disponivel -= quantidade
+                produto.save(update_fields=["quantidade_disponivel"])
+
+            item = loja.copiar_para_ficha(origem, personagem, quantidade)
+
+            transacao = TransacaoLoja.objects.create(
+                campanha=campanha,
+                tipo="loja",
+                comprador_personagem=personagem,
+                produto=produto,
+                nome_item=origem.nome,
+                preco_unitario=produto.preco,
+                quantidade=quantidade,
+                total=total,
+                chave_idempotencia=chave,
+            )
+
+    except IntegrityError:
+        # Duas requisições com a MESMA chave chegaram juntas e a segunda
+        # esbarrou no índice único: a compra da primeira vale.
+        ja_feita = TransacaoLoja.objects.filter(chave_idempotencia=chave).first() if chave else None
+        if ja_feita is not None:
+            return Response(TransacaoLojaSerializer(ja_feita).data, status=status.HTTP_200_OK)
+        raise
+
+    return Response(
+        {
+            "transacao": TransacaoLojaSerializer(transacao).data,
+            # A ficha e a vitrine se atualizam com o que volta daqui, sem
+            # recarregar a página nem pedir tudo de novo.
+            "item": loja.serializer_da_ficha(loja.classe_de(origem))(item).data,
+            "dinheiro": str(personagem.dinheiro),
+            "quantidade_disponivel": produto.quantidade_disponivel,
+        },
+        status=status.HTTP_201_CREATED,
+    )
+
+
+@extend_schema(
+    methods=["GET"], operation_id="listar_transacoes_loja", responses=TransacaoLojaSerializer(many=True)
+)
+@api_view(["GET"])
+@permission_classes([IsAuthenticated])
+def transacao_loja_lista(request, pk):
+    """
+    Extrato da loja. O mestre vê a mesa inteira; o jogador vê só o que
+    envolve os personagens dele.
+    """
+    campanha, erro = _busca_campanha_do_participante(request, pk)
+
+    if erro:
+        return erro
+
+    transacoes = campanha.transacoes_loja.select_related(
+        "comprador_personagem", "vendedor_personagem"
+    )
+
+    if not (request.user.is_superuser or campanha.mestre_id == request.user.pk):
+        meus = list(campanha.personagens.filter(usuario=request.user).values_list("id", flat=True))
+        transacoes = transacoes.filter(
+            Q(comprador_personagem_id__in=meus) | Q(vendedor_personagem_id__in=meus)
+        )
+
+    return Response(TransacaoLojaSerializer(transacoes[:200], many=True).data)
+
+
+# ---------------------------------------------------------------------------
+# Comércio Livre
+# ---------------------------------------------------------------------------
+
+def _erro_comercio(exc):
+    return Response({"erro": exc.mensagem}, status=exc.status)
+
+
+@extend_schema(
+    methods=["GET"], operation_id="listar_anuncios", responses=AnuncioComercioLivreSerializer(many=True)
+)
+@extend_schema(
+    methods=["POST"],
+    operation_id="criar_anuncio",
+    request=AnuncioComercioLivreSerializer,
+    responses=AnuncioComercioLivreSerializer,
+)
+@api_view(["GET", "POST"])
+@permission_classes([IsAuthenticated])
+def anuncio_lista(request, pk):
+    """
+    GET: as ofertas ativas da campanha (é o que todo mundo na mesa vê).
+    POST: o jogador põe um item do PRÓPRIO inventário à venda.
+
+    `?meus=1` filtra para os anúncios dos personagens de quem está pedindo —
+    é a visão "meus anúncios".
+    """
+    campanha, erro = _busca_campanha_do_participante(request, pk)
+
+    if erro:
+        return erro
+
+    if request.method == "GET":
+        anuncios = campanha.anuncios.filter(ativo=True).select_related(
+            "vendedor_personagem", "item"
+        )
+
+        if request.query_params.get("meus") in ("1", "true", "True"):
+            anuncios = anuncios.filter(vendedor_personagem__usuario=request.user)
+
+        return Response(AnuncioComercioLivreSerializer(anuncios, many=True).data)
+
+    try:
+        item = Item.objects.select_related("personagem").get(pk=request.data.get("item"))
+    except (Item.DoesNotExist, ValueError, TypeError):
+        return Response({"item": ["Item não encontrado."]}, status=status.HTTP_400_BAD_REQUEST)
+
+    # Vender ALTERA a ficha (o item sai do inventário), então a regra é a
+    # mesma de editar: o dono, ou o mestre da mesa.
+    check_object_permission(request, item)
+
+    serializer = AnuncioComercioLivreSerializer(data=request.data)
+
+    if not serializer.is_valid():
+        return Response(serializer.errors, status=status.HTTP_400_BAD_REQUEST)
+
+    try:
+        anuncio = comercio.anunciar(
+            item,
+            campanha=campanha,
+            preco=serializer.validated_data.get("preco"),
+            quantidade=serializer.validated_data.get("quantidade"),
+        )
+    except comercio.ErroComercio as exc:
+        return _erro_comercio(exc)
+
+    return Response(AnuncioComercioLivreSerializer(anuncio).data, status=status.HTTP_201_CREATED)
+
+
+@extend_schema(methods=["GET"], operation_id="detalhar_anuncio", responses=AnuncioComercioLivreSerializer)
+@extend_schema(
+    methods=["PATCH"],
+    operation_id="atualizar_anuncio",
+    request=AnuncioComercioLivreSerializer,
+    responses=AnuncioComercioLivreSerializer,
+)
+@extend_schema(methods=["DELETE"], operation_id="retirar_anuncio", responses=None)
+@api_view(["GET", "PATCH", "DELETE"])
+@permission_classes([IsAuthenticated])
+def anuncio_detalhe(request, anuncio_pk):
+    """
+    PATCH ajusta preço/quantidade; DELETE retira o item da venda (o anúncio
+    é encerrado, não apagado — as transações continuam apontando para ele).
+    """
+    try:
+        anuncio = AnuncioComercioLivre.objects.select_related(
+            "campanha", "item", "vendedor_personagem"
+        ).get(pk=anuncio_pk)
+    except AnuncioComercioLivre.DoesNotExist:
+        return Response({"erro": "Anúncio não encontrado."}, status=status.HTTP_404_NOT_FOUND)
+
+    campanha, erro = _busca_campanha_do_participante(request, anuncio.campanha_id)
+
+    if erro:
+        return erro
+
+    if request.method == "GET":
+        return Response(AnuncioComercioLivreSerializer(anuncio).data)
+
+    # Mexer no anúncio é mexer no item — mesma permissão de editar a ficha.
+    check_object_permission(request, anuncio.item)
+
+    if request.method == "PATCH":
+        serializer = AnuncioComercioLivreSerializer(anuncio, data=request.data, partial=True)
+
+        if not serializer.is_valid():
+            return Response(serializer.errors, status=status.HTTP_400_BAD_REQUEST)
+
+        try:
+            atualizado = comercio.anunciar(
+                anuncio.item,
+                campanha=campanha,
+                preco=serializer.validated_data.get("preco", anuncio.preco),
+                quantidade=serializer.validated_data.get("quantidade", anuncio.quantidade),
+            )
+        except comercio.ErroComercio as exc:
+            return _erro_comercio(exc)
+
+        return Response(AnuncioComercioLivreSerializer(atualizado).data)
+
+    comercio.retirar(anuncio.item)
+
+    return Response({"mensagem": "Item retirado da venda."}, status=status.HTTP_204_NO_CONTENT)
+
+
+@extend_schema(
+    methods=["POST"],
+    operation_id="comprar_anuncio",
+    request={
+        "application/json": {
+            "type": "object",
+            "properties": {
+                "personagem": {"type": "integer"},
+                "quantidade": {"type": "integer"},
+                "chave_idempotencia": {"type": "string"},
+            },
+            "required": ["personagem"],
+        }
+    },
+    responses=TransacaoLojaSerializer,
+)
+@api_view(["POST"])
+@permission_classes([IsAuthenticated])
+def comprar_anuncio(request, anuncio_pk):
+    """
+    Compra de um item anunciado por outro jogador. O dinheiro e o item
+    trocam de mãos na MESMA transação, com as quatro linhas envolvidas
+    travadas — ver `Campanha/comercio.py`.
+    """
+    try:
+        anuncio = AnuncioComercioLivre.objects.select_related("campanha").get(pk=anuncio_pk)
+    except AnuncioComercioLivre.DoesNotExist:
+        return Response({"erro": "Anúncio não encontrado."}, status=status.HTTP_404_NOT_FOUND)
+
+    campanha, erro = _busca_campanha_do_participante(request, anuncio.campanha_id)
+
+    if erro:
+        return erro
+
+    comprador, erro = _personagem_da_compra(request, campanha)
+
+    if erro:
+        return erro
+
+    quantidade, erro = _quantidade_pedida(request)
+
+    if erro:
+        return erro
+
+    chave = (request.data.get("chave_idempotencia") or "").strip() or None
+
+    if chave:
+        ja_feita = TransacaoLoja.objects.filter(chave_idempotencia=chave).first()
+        if ja_feita is not None:
+            return Response(TransacaoLojaSerializer(ja_feita).data, status=status.HTTP_200_OK)
+
+    try:
+        transacao, item, anuncio = comercio.comprar(
+            anuncio.pk, comprador, request.user, quantidade=quantidade, chave=chave
+        )
+    except comercio.ErroComercio as exc:
+        return _erro_comercio(exc)
+    except IntegrityError:
+        ja_feita = TransacaoLoja.objects.filter(chave_idempotencia=chave).first() if chave else None
+        if ja_feita is not None:
+            return Response(TransacaoLojaSerializer(ja_feita).data, status=status.HTTP_200_OK)
+        raise
+
+    comprador.refresh_from_db()
+
+    return Response(
+        {
+            "transacao": TransacaoLojaSerializer(transacao).data,
+            "item": loja.serializer_da_ficha(comercio.classe_do_item(item))(item).data,
+            "dinheiro": str(comprador.dinheiro),
+            "anuncio": AnuncioComercioLivreSerializer(anuncio).data,
+        },
+        status=status.HTTP_201_CREATED,
+    )

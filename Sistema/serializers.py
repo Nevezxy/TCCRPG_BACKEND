@@ -1,4 +1,6 @@
 from rest_framework import serializers
+
+from Midia.serializers import CloudinaryUrlSerializerMixin
 from Sistema.models import *
 
 
@@ -12,12 +14,18 @@ class RegraSerializer(serializers.ModelSerializer):
         model = Regra
         fields = "__all__"
 
-class PoderSistemaSerializer(serializers.ModelSerializer):
+class PoderSistemaSerializer(CloudinaryUrlSerializerMixin, serializers.ModelSerializer):
+
+    media_fields = ["midia"]
+
     class Meta:
         model = PoderSistema
         fields = "__all__"
         
-class HabilidadeSistemaSerializer(serializers.ModelSerializer):
+class HabilidadeSistemaSerializer(CloudinaryUrlSerializerMixin, serializers.ModelSerializer):
+
+    media_fields = ["midia"]
+
     class Meta:
         model = HabilidadeSistema
         fields = "__all__"
@@ -33,17 +41,26 @@ class GrupoArmasSerializer(serializers.ModelSerializer):
         model = GrupoArmas
         fields = "__all__"
         
-class ItemSistemaSerializer(serializers.ModelSerializer):
+class ItemSistemaSerializer(CloudinaryUrlSerializerMixin, serializers.ModelSerializer):
+
+    media_fields = ["foto"]
+
     class Meta:
         model = ItemSistema
         fields = "__all__"
         
-class ArmaSistemaSerializer(serializers.ModelSerializer):
+class ArmaSistemaSerializer(CloudinaryUrlSerializerMixin, serializers.ModelSerializer):
+
+    media_fields = ["foto"]
+
     class Meta:
         model = ArmaSistema
         fields = "__all__"
         
-class ArmaduraSistemaSerializer(serializers.ModelSerializer):
+class ArmaduraSistemaSerializer(CloudinaryUrlSerializerMixin, serializers.ModelSerializer):
+
+    media_fields = ["foto"]
+
     class Meta:
         model = ArmaduraSistema
         fields = "__all__"

@@ -295,6 +295,30 @@ def apagar_ajuste(instance, campo=None):
         AjusteImagem.objects.filter(content_type=ct, object_id=instance.pk, campo=nome).delete()
 
 
+def copiar_ajuste(origem, destino, campos):
+    """
+    Copia o enquadramento de `origem` para `destino`, campo a campo — usado
+    quando um objeto é CLONADO junto com a imagem (biblioteca do Sistema ou
+    da Campanha → ficha, venda de um item entre jogadores).
+
+    As duas linhas passam a apontar para o MESMO `public_id`, e isso é
+    seguro por causa de `referencias_ativas`: antes de apagar qualquer
+    arquivo, `processar_fila` recheca se ele ainda aparece em ALGUMA coluna
+    de imagem do banco. Então apagar a cópia (ou o original) tira só a
+    referência — o arquivo só some quando ninguém mais o usa.
+
+    `campos` aceita nomes diferentes nos dois lados (`"foto"` quando é o
+    mesmo nome, ou `("midia", "foto")` para origem→destino).
+    """
+    for campo in campos:
+        campo_origem, campo_destino = campo if isinstance(campo, (tuple, list)) else (campo, campo)
+        if not getattr(destino, campo_destino, None):
+            continue
+        dados = ler_ajustes(type(origem), [origem.pk], [campo_origem]).get(origem.pk, {}).get(campo_origem)
+        if dados:
+            gravar_ajuste(destino, campo_destino, dados)
+
+
 # ---------------------------------------------------------------------------
 # Referências e exclusão
 # ---------------------------------------------------------------------------
