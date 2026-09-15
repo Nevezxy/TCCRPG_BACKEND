@@ -351,6 +351,87 @@ urlpatterns = [
         name="raca_conexoes"
     ),
 
+    # ------------------------------------------------------------------
+    # Equipamentos exclusivos da campanha — entidades de mundo como as
+    # demais (mesma fábrica `_crud_mundo`), mais as rotas de cópia para a
+    # ficha, no mesmo molde das cópias do app Sistema.
+    # ------------------------------------------------------------------
+    # Itens da campanha
+    path(
+        "<int:pk>/itens-campanha/",
+        views.itemcampanha_lista,
+        name="itemcampanha_lista"
+    ),
+
+    path(
+        "itens-campanha/<int:obj_pk>/",
+        views.itemcampanha_detalhe,
+        name="itemcampanha_detalhe"
+    ),
+
+    path(
+        "itens-campanha/<int:obj_pk>/conexoes/",
+        views.itemcampanha_conexoes,
+        name="itemcampanha_conexoes"
+    ),
+
+    path(
+        "personagens/<int:personagem_id>/itens-campanha/<int:item_id>/copiar/",
+        views.copiar_item_campanha,
+        name="copiar_item_campanha"
+    ),
+
+    # Armas da campanha
+    path(
+        "<int:pk>/armas-campanha/",
+        views.armacampanha_lista,
+        name="armacampanha_lista"
+    ),
+
+    path(
+        "armas-campanha/<int:obj_pk>/",
+        views.armacampanha_detalhe,
+        name="armacampanha_detalhe"
+    ),
+
+    path(
+        "armas-campanha/<int:obj_pk>/conexoes/",
+        views.armacampanha_conexoes,
+        name="armacampanha_conexoes"
+    ),
+
+    path(
+        "personagens/<int:personagem_id>/armas-campanha/<int:arma_id>/copiar/",
+        views.copiar_arma_campanha,
+        name="copiar_arma_campanha"
+    ),
+
+    # Armaduras da campanha
+    path(
+        "<int:pk>/armaduras-campanha/",
+        views.armaduracampanha_lista,
+        name="armaduracampanha_lista"
+    ),
+
+    path(
+        "armaduras-campanha/<int:obj_pk>/",
+        views.armaduracampanha_detalhe,
+        name="armaduracampanha_detalhe"
+    ),
+
+    path(
+        "armaduras-campanha/<int:obj_pk>/conexoes/",
+        views.armaduracampanha_conexoes,
+        name="armaduracampanha_conexoes"
+    ),
+
+    path(
+        "personagens/<int:personagem_id>/armaduras-campanha/<int:armadura_id>/copiar/",
+        views.copiar_armadura_campanha,
+        name="copiar_armadura_campanha"
+    ),
+
+
     # Pastas — árvore de organização estilo Obsidian (seção 3)
     path(
         "<int:pk>/pastas/",

@@ -13,6 +13,14 @@ class PersonagemSerializer(SincronizaSistemasMixin, CloudinaryUrlSerializerMixin
 
     media_fields = ["foto", "banner"]
 
+    # Ids das campanhas das quais este personagem participa (M2M reverso de
+    # `Campanha.personagens`). Só leitura: quem entra/sai de uma campanha é
+    # decidido pelos endpoints da própria Campanha, nunca por um PATCH na
+    # ficha. Exposto porque a Biblioteca precisa saber quais campanhas
+    # consultar para oferecer os equipamentos exclusivos delas — mesmo papel
+    # que `sistemas` já cumpre para as bibliotecas de regras.
+    campanhas = serializers.PrimaryKeyRelatedField(many=True, read_only=True)
+
     class Meta:
         model = Personagem
         fields = "__all__"

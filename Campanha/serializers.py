@@ -24,6 +24,9 @@ from .models import (
     Criatura,
     Divindade,
     Raca,
+    ItemCampanha,
+    ArmaCampanha,
+    ArmaduraCampanha,
     modelos_conectaveis,
 )
 from Personagem.models import Personagem
@@ -178,6 +181,7 @@ class CampanhaSerializer(SincronizaSistemasMixin, CloudinaryUrlSerializerMixin, 
 _MODELOS_NOTAVEIS = [
     Campanha, NPC, Local, Organizacao, Mapa, Sessao, Missao, Evento,
     Documento, Imagem, Canva, Criatura, Divindade, Raca,
+    ItemCampanha, ArmaCampanha, ArmaduraCampanha,
     Personagem,
 ]
 
@@ -1054,3 +1058,34 @@ class RacaSerializer(EntidadeMundoSerializer):
 
     class Meta(EntidadeMundoSerializer.Meta):
         model = Raca
+
+
+# ---------------------------------------------------------------------------
+# Equipamentos exclusivos da campanha — mesma base das demais entidades de
+# mundo. O único campo de imagem é `foto`; todo o resto (pasta da mesma
+# campanha, trava dos campos de mestre, conexões, `campanha` read-only) vem
+# de `EntidadeMundoSerializer`.
+# ---------------------------------------------------------------------------
+
+class ItemCampanhaSerializer(EntidadeMundoSerializer):
+
+    media_fields = ["foto"]
+
+    class Meta(EntidadeMundoSerializer.Meta):
+        model = ItemCampanha
+
+
+class ArmaCampanhaSerializer(EntidadeMundoSerializer):
+
+    media_fields = ["foto"]
+
+    class Meta(EntidadeMundoSerializer.Meta):
+        model = ArmaCampanha
+
+
+class ArmaduraCampanhaSerializer(EntidadeMundoSerializer):
+
+    media_fields = ["foto"]
+
+    class Meta(EntidadeMundoSerializer.Meta):
+        model = ArmaduraCampanha

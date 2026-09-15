@@ -7,8 +7,9 @@ from rest_framework.response import Response
 
 from cloudinary.models import CloudinaryField
 
-from Personagem.models import Personagem
-from Personagem.serializers import PersonagemSerializer
+from Midia.services import copiar_ajuste
+from Personagem.models import Arma, Armadura, Item, Personagem
+from Personagem.serializers import ArmaSerializer, ArmaduraSerializer, ItemSerializer, PersonagemSerializer
 
 from django.contrib.contenttypes.models import ContentType
 from django.db.models import Q
@@ -33,6 +34,9 @@ from .models import (
     Criatura,
     Divindade,
     Raca,
+    ItemCampanha,
+    ArmaCampanha,
+    ArmaduraCampanha,
 )
 from Usuario.permissions import check_object_permission, pode_criar_ou_excluir, usuario_pode_ver_objeto
 from .escudo import montar_snapshot
@@ -56,6 +60,9 @@ from .serializers import (
     CriaturaSerializer,
     DivindadeSerializer,
     RacaSerializer,
+    ItemCampanhaSerializer,
+    ArmaCampanhaSerializer,
+    ArmaduraCampanhaSerializer,
     campanhas_do_objeto_notavel,
     conexoes_de_entidade,
 )
@@ -2576,6 +2583,9 @@ _BUSCA_MODELOS = [
     ("criatura", Criatura, "nome"),
     ("divindade", Divindade, "nome"),
     ("raca", Raca, "nome"),
+    ("itemcampanha", ItemCampanha, "nome"),
+    ("armacampanha", ArmaCampanha, "nome"),
+    ("armaduracampanha", ArmaduraCampanha, "nome"),
 ]
 
 
@@ -2693,6 +2703,9 @@ _SERIALIZER_POR_TIPO = {
     "criatura": CriaturaSerializer,
     "divindade": DivindadeSerializer,
     "raca": RacaSerializer,
+    "itemcampanha": ItemCampanhaSerializer,
+    "armacampanha": ArmaCampanhaSerializer,
+    "armaduracampanha": ArmaduraCampanhaSerializer,
 }
 
 # tipo -> (Modelo, SerializerClass, campo_titulo)
@@ -3016,3 +3029,105 @@ divindade_lista, divindade_detalhe, divindade_conexoes = _crud_mundo(
 raca_lista, raca_detalhe, raca_conexoes = _crud_mundo(
     "raca", "racas", Raca, RacaSerializer, "Raça"
 )
+itemcampanha_lista, itemcampanha_detalhe, itemcampanha_conexoes = _crud_mundo(
+    "itemcampanha", "itens_campanha", ItemCampanha, ItemCampanhaSerializer, "Item da campanha"
+)
+armacampanha_lista, armacampanha_detalhe, armacampanha_conexoes = _crud_mundo(
+    "armacampanha", "armas_campanha", ArmaCampanha, ArmaCampanhaSerializer, "Arma da campanha"
+)
+armaduracampanha_lista, armaduracampanha_detalhe, armaduracampanha_conexoes = _crud_mundo(
+    "armaduracampanha", "armaduras_campanha", ArmaduraCampanha, ArmaduraCampanhaSerializer, "Armadura da campanha"
+)
+
+
+# ---------------------------------------------------------------------------
+# Cópia equipamento da campanha -> ficha
+#
+# Mesmo contrato das cópias do app Sistema (`Sistema/views.py`): o item
+# ORIGINAL nunca é tocado, a imagem vai por referência (mesmo public_id) com
+# o enquadramento junto, e a ficha recebe uma linha nova e independente.
+#
+# A diferença é a checagem extra de escopo: além de poder editar a ficha, o
+# personagem precisa PARTICIPAR da campanha dona do equipamento — sem isso,
+# qualquer um com um id em mãos copiaria itens de uma campanha que não é
+# sua. Jogador também só copia o que enxerga (`visivel_para_jogadores`).
+# ---------------------------------------------------------------------------
+
+# tipo -> (Modelo, rótulo, campos copiados além dos comuns, Modelo da ficha,
+#          Serializer da ficha)
+_CAMPOS_COMUNS_COPIA = ("nome", "descricao", "peso", "valor", "qualidade")
+
+_COPIA_EQUIPAMENTO = {
+    "item": (ItemCampanha, "Item", (), Item, ItemSerializer),
+    "arma": (
+        ArmaCampanha,
+        "Arma",
+        ("ataque", "dano", "dano_extra", "margem_critico", "critico", "alcance", "tipo_dano", "empunhadura"),
+        Arma,
+        ArmaSerializer,
+    ),
+    "armadura": (ArmaduraCampanha, "Armadura", ("defesa",), Armadura, ArmaduraSerializer),
+}
+
+
+def _copiar_equipamento_campanha(request, personagem_id, equipamento_id, tipo):
+    modelo, rotulo, campos_extras, modelo_ficha, serializer_ficha = _COPIA_EQUIPAMENTO[tipo]
+
+    try:
+        personagem = Personagem.objects.get(pk=personagem_id)
+    except Personagem.DoesNotExist:
+        return Response({"erro": "Personagem não encontrado."}, status=status.HTTP_404_NOT_FOUND)
+
+    check_object_permission(request, personagem)
+
+    try:
+        origem = modelo.objects.select_related("campanha").get(pk=equipamento_id)
+    except modelo.DoesNotExist:
+        return Response({"erro": f"{rotulo} não encontrado(a)."}, status=status.HTTP_404_NOT_FOUND)
+
+    # Copiar exige ENXERGAR o equipamento, não editá-lo — por isso
+    # `usuario_pode_ver_objeto` (que ignora o método HTTP) e não
+    # `check_object_permission`: esta requisição é um POST, e para a
+    # permission um POST sobre um objeto de mundo existente é coisa de
+    # mestre. A regra de visibilidade aplicada é a mesma das listagens
+    # (mestre vê tudo; jogador só o que é `visivel_para_jogadores`).
+    if not usuario_pode_ver_objeto(request.user, origem):
+        return Response(
+            {"erro": "Você não tem acesso a este equipamento."},
+            status=status.HTTP_403_FORBIDDEN,
+        )
+
+    if not personagem.campanhas.filter(pk=origem.campanha_id).exists():
+        return Response(
+            {"erro": "Este personagem não participa da campanha deste equipamento."},
+            status=status.HTTP_403_FORBIDDEN,
+        )
+
+    dados = {campo: getattr(origem, campo) for campo in _CAMPOS_COMUNS_COPIA + campos_extras}
+    # A coluna de imagem da ficha não aceita NULL (ver `Personagem.Item.foto`).
+    copia = modelo_ficha.objects.create(personagem=personagem, foto=origem.foto or "", **dados)
+
+    copiar_ajuste(origem, copia, ["foto"])
+
+    return Response(serializer_ficha(copia).data, status=status.HTTP_201_CREATED)
+
+
+@extend_schema(methods=["POST"], operation_id="copiar_item_campanha", request=None, responses=ItemSerializer)
+@api_view(["POST"])
+@permission_classes([IsAuthenticated])
+def copiar_item_campanha(request, personagem_id, item_id):
+    return _copiar_equipamento_campanha(request, personagem_id, item_id, "item")
+
+
+@extend_schema(methods=["POST"], operation_id="copiar_arma_campanha", request=None, responses=ArmaSerializer)
+@api_view(["POST"])
+@permission_classes([IsAuthenticated])
+def copiar_arma_campanha(request, personagem_id, arma_id):
+    return _copiar_equipamento_campanha(request, personagem_id, arma_id, "arma")
+
+
+@extend_schema(methods=["POST"], operation_id="copiar_armadura_campanha", request=None, responses=ArmaduraSerializer)
+@api_view(["POST"])
+@permission_classes([IsAuthenticated])
+def copiar_armadura_campanha(request, personagem_id, armadura_id):
+    return _copiar_equipamento_campanha(request, personagem_id, armadura_id, "armadura")

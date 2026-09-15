@@ -4,7 +4,11 @@ from rest_framework.test import APITestCase
 from Usuario.models import Usuario
 from Personagem.models import Personagem
 from Sistema.models import Sistema
-from .models import Campanha, NPC, Local, Organizacao, Pasta, TipoConexao, Conexao, Imagem
+from Personagem.models import Arma, Armadura, Item
+from .models import (
+    Campanha, NPC, Local, Organizacao, Pasta, TipoConexao, Conexao, Imagem,
+    ItemCampanha, ArmaCampanha, ArmaduraCampanha,
+)
 
 
 class DuasCampanhasTestCase(APITestCase):
@@ -1042,3 +1046,236 @@ class MultiplasBibliotecasTests(DuasCampanhasTestCase):
 
         self.assertEqual(response.status_code, status.HTTP_200_OK, response.data)
         self.assertCountEqual(response.data["sistemas"], [self.s1.id, self.s2.id])
+
+
+# ---------------------------------------------------------------------------
+# Equipamentos exclusivos da campanha
+# ---------------------------------------------------------------------------
+
+class EquipamentosCampanhaTests(DuasCampanhasTestCase):
+    """
+    O que importa aqui é o ISOLAMENTO (um equipamento pertence a UMA
+    campanha e não vaza para outra) e a divisão mestre/jogador. O CRUD em si
+    é o mesmo `_crud_mundo` já coberto por `EntidadesMundoNovasTests` — o que
+    se testa é que estes três tipos entraram nele de verdade, incluindo
+    busca, duplicação e conexões.
+    """
+
+    def setUp(self):
+        super().setUp()
+        self.item_a = ItemCampanha.objects.create(
+            campanha=self.campanha_a, nome="Poção do Arauto", descricao="Cura 2d4.", valor=50
+        )
+        self.arma_a = ArmaCampanha.objects.create(campanha=self.campanha_a, nome="Lâmina de Vidro", dano="1d8")
+        self.armadura_a = ArmaduraCampanha.objects.create(campanha=self.campanha_a, nome="Casaco Rúnico", defesa=3)
+
+    # -- criação e edição ---------------------------------------------------
+
+    def test_mestre_cria_item_exclusivo(self):
+        self.autentica_como(self.mestre_a)
+
+        response = self.client.post(
+            f"/campanha/{self.campanha_a.id}/itens-campanha/",
+            {"nome": "Amuleto de Wynna", "descricao": "Concede +2 em testes de magia.", "valor": "120.00"},
+            format="json",
+        )
+
+        self.assertEqual(response.status_code, status.HTTP_201_CREATED, response.data)
+        self.assertEqual(response.data["nome"], "Amuleto de Wynna")
+        self.assertEqual(response.data["campanha"], self.campanha_a.id)
+
+    def test_jogador_nao_cria_nem_edita_nem_exclui(self):
+        self.autentica_como(self.jogador_a)
+
+        criar = self.client.post(
+            f"/campanha/{self.campanha_a.id}/itens-campanha/", {"nome": "Item pirata"}, format="json"
+        )
+        editar = self.client.patch(
+            f"/campanha/itens-campanha/{self.item_a.id}/", {"valor": "1.00"}, format="json"
+        )
+        excluir = self.client.delete(f"/campanha/itens-campanha/{self.item_a.id}/")
+
+        self.assertEqual(criar.status_code, status.HTTP_403_FORBIDDEN)
+        self.assertEqual(editar.status_code, status.HTTP_403_FORBIDDEN)
+        self.assertEqual(excluir.status_code, status.HTTP_403_FORBIDDEN)
+
+    # -- visibilidade -------------------------------------------------------
+
+    def test_jogador_da_campanha_ve_os_tres_tipos(self):
+        self.autentica_como(self.jogador_a)
+
+        itens = self.client.get(f"/campanha/{self.campanha_a.id}/itens-campanha/")
+        armas = self.client.get(f"/campanha/{self.campanha_a.id}/armas-campanha/")
+        armaduras = self.client.get(f"/campanha/{self.campanha_a.id}/armaduras-campanha/")
+
+        self.assertEqual([i["nome"] for i in itens.data], ["Poção do Arauto"])
+        self.assertEqual([a["nome"] for a in armas.data], ["Lâmina de Vidro"])
+        self.assertEqual([a["nome"] for a in armaduras.data], ["Casaco Rúnico"])
+
+    def test_jogador_de_outra_campanha_nao_acessa(self):
+        self.autentica_como(self.jogador_b)
+
+        lista = self.client.get(f"/campanha/{self.campanha_a.id}/itens-campanha/")
+        detalhe = self.client.get(f"/campanha/itens-campanha/{self.item_a.id}/")
+
+        self.assertEqual(lista.status_code, status.HTTP_403_FORBIDDEN)
+        self.assertEqual(detalhe.status_code, status.HTTP_403_FORBIDDEN)
+
+    def test_item_escondido_nao_aparece_para_jogador_mas_aparece_para_mestre(self):
+        ItemCampanha.objects.create(
+            campanha=self.campanha_a, nome="Segredo do mestre", visivel_para_jogadores=False
+        )
+
+        self.autentica_como(self.jogador_a)
+        do_jogador = self.client.get(f"/campanha/{self.campanha_a.id}/itens-campanha/")
+        self.autentica_como(self.mestre_a)
+        do_mestre = self.client.get(f"/campanha/{self.campanha_a.id}/itens-campanha/")
+
+        self.assertNotIn("Segredo do mestre", [i["nome"] for i in do_jogador.data])
+        self.assertIn("Segredo do mestre", [i["nome"] for i in do_mestre.data])
+
+    # -- integração com o resto da aba Mundo --------------------------------
+
+    def test_entram_na_busca_global_da_campanha(self):
+        self.autentica_como(self.jogador_a)
+
+        response = self.client.get(f"/campanha/{self.campanha_a.id}/busca/?q=Lâmina")
+
+        tipos = {(r["tipo"], r["nome"]) for r in response.data}
+        self.assertIn(("armacampanha", "Lâmina de Vidro"), tipos)
+
+    def test_podem_ser_organizados_em_pasta_da_propria_campanha(self):
+        pasta = Pasta.objects.create(campanha=self.campanha_a, nome="Tesouro")
+        pasta_outra = Pasta.objects.create(campanha=self.campanha_b, nome="Alheia")
+        self.autentica_como(self.mestre_a)
+
+        ok = self.client.patch(
+            f"/campanha/itens-campanha/{self.item_a.id}/", {"pasta": pasta.id}, format="json"
+        )
+        recusado = self.client.patch(
+            f"/campanha/itens-campanha/{self.item_a.id}/", {"pasta": pasta_outra.id}, format="json"
+        )
+
+        self.assertEqual(ok.status_code, status.HTTP_200_OK, ok.data)
+        self.assertEqual(ok.data["pasta"], pasta.id)
+        self.assertEqual(recusado.status_code, status.HTTP_400_BAD_REQUEST)
+
+    def test_mestre_duplica_um_equipamento(self):
+        self.autentica_como(self.mestre_a)
+
+        response = self.client.post(
+            f"/campanha/{self.campanha_a.id}/entidades/duplicar/",
+            {"tipo": "armacampanha", "id": self.arma_a.id},
+            format="json",
+        )
+
+        self.assertEqual(response.status_code, status.HTTP_201_CREATED, response.data)
+        self.assertEqual(response.data["nome"], "Lâmina de Vidro (cópia)")
+        self.assertEqual(response.data["dano"], "1d8")
+
+    def test_podem_participar_de_uma_conexao(self):
+        tipo = TipoConexao.objects.create(nome="Forjado por")
+        self.autentica_como(self.mestre_a)
+
+        response = self.client.post(
+            f"/campanha/{self.campanha_a.id}/conexoes/",
+            {
+                "entidade1_tipo": "armacampanha",
+                "entidade1_id": self.arma_a.id,
+                "entidade2_tipo": "npc",
+                "entidade2_id": self.npc_a1.id,
+                "tipo": tipo.id,
+            },
+            format="json",
+        )
+
+        self.assertEqual(response.status_code, status.HTTP_201_CREATED, response.data)
+
+
+class CopiaEquipamentoParaFichaTests(DuasCampanhasTestCase):
+    """
+    Copiar leva uma linha NOVA para a ficha e nunca altera o original — é o
+    requisito de "sem alterar os itens originais".
+    """
+
+    def setUp(self):
+        super().setUp()
+        self.item_a = ItemCampanha.objects.create(
+            campanha=self.campanha_a, nome="Poção do Arauto", descricao="Cura 2d4.", peso=1, valor=50
+        )
+        self.arma_a = ArmaCampanha.objects.create(
+            campanha=self.campanha_a, nome="Lâmina de Vidro", dano="1d8", ataque=2, tipo_dano="Perfurante"
+        )
+        self.armadura_a = ArmaduraCampanha.objects.create(
+            campanha=self.campanha_a, nome="Casaco Rúnico", defesa=3
+        )
+
+        self.personagem_a = Personagem.objects.create(usuario=self.jogador_a, nome="Arkan")
+        self.campanha_a.personagens.add(self.personagem_a)
+
+        self.personagem_b = Personagem.objects.create(usuario=self.jogador_b, nome="Estranha")
+        self.campanha_b.personagens.add(self.personagem_b)
+
+    def test_jogador_copia_item_da_campanha_para_a_ficha(self):
+        self.autentica_como(self.jogador_a)
+
+        response = self.client.post(
+            f"/campanha/personagens/{self.personagem_a.id}/itens-campanha/{self.item_a.id}/copiar/",
+            {},
+            format="json",
+        )
+
+        self.assertEqual(response.status_code, status.HTTP_201_CREATED, response.data)
+        item = Item.objects.get(pk=response.data["id"])
+        self.assertEqual(item.nome, "Poção do Arauto")
+        self.assertEqual(item.descricao, "Cura 2d4.")
+        self.assertEqual(item.personagem_id, self.personagem_a.id)
+        # O original continua intacto e é outro registro.
+        self.item_a.refresh_from_db()
+        self.assertEqual(self.item_a.nome, "Poção do Arauto")
+        self.assertEqual(ItemCampanha.objects.count(), 1)
+
+    def test_arma_e_armadura_levam_os_campos_de_jogo(self):
+        self.autentica_como(self.jogador_a)
+        base = f"/campanha/personagens/{self.personagem_a.id}"
+
+        self.client.post(f"{base}/armas-campanha/{self.arma_a.id}/copiar/", {}, format="json")
+        self.client.post(f"{base}/armaduras-campanha/{self.armadura_a.id}/copiar/", {}, format="json")
+
+        arma = Arma.objects.get()
+        self.assertEqual((arma.dano, arma.ataque, arma.tipo_dano), ("1d8", 2, "Perfurante"))
+        self.assertEqual(Armadura.objects.get().defesa, 3)
+
+    def test_personagem_de_outra_campanha_nao_copia(self):
+        self.autentica_como(self.jogador_b)
+
+        response = self.client.post(
+            f"/campanha/personagens/{self.personagem_b.id}/itens-campanha/{self.item_a.id}/copiar/",
+            {},
+            format="json",
+        )
+
+        self.assertEqual(response.status_code, status.HTTP_403_FORBIDDEN)
+        self.assertFalse(Item.objects.exists())
+
+    def test_item_escondido_nao_pode_ser_copiado_pelo_jogador(self):
+        escondido = ItemCampanha.objects.create(
+            campanha=self.campanha_a, nome="Segredo", visivel_para_jogadores=False
+        )
+        self.autentica_como(self.jogador_a)
+
+        response = self.client.post(
+            f"/campanha/personagens/{self.personagem_a.id}/itens-campanha/{escondido.id}/copiar/",
+            {},
+            format="json",
+        )
+
+        self.assertEqual(response.status_code, status.HTTP_403_FORBIDDEN)
+
+    def test_ficha_expoe_as_campanhas_do_personagem(self):
+        """É o que permite à Biblioteca saber onde procurar os exclusivos."""
+        self.autentica_como(self.jogador_a)
+
+        response = self.client.get(f"/personagem/{self.personagem_a.id}/")
+
+        self.assertEqual(response.data["campanhas"], [self.campanha_a.id])

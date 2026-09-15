@@ -560,6 +560,7 @@ def modelos_conectaveis():
     return [
         NPC, Local, Organizacao, Mapa, Sessao, Missao, Evento,
         Documento, Imagem, Canva, Criatura, Divindade, Raca,
+        ItemCampanha, ArmaCampanha, ArmaduraCampanha,
         _Personagem,
     ]
 
@@ -908,3 +909,89 @@ class Raca(EntidadeMundo):
     class Meta(EntidadeMundo.Meta):
         verbose_name = "Raça"
         verbose_name_plural = "Raças"
+
+
+# ---------------------------------------------------------------------------
+# Equipamentos exclusivos da campanha
+#
+# São entidades de MUNDO (herdam `EntidadeMundo`), não um catálogo à parte:
+# ficam na árvore de pastas junto com NPCs e Locais, entram na busca global,
+# podem ser duplicadas, conectadas e anotadas — tudo herdado, sem código por
+# tipo. O que o mestre cria aqui pertence só a esta campanha e NUNCA toca nos
+# itens originais do Sistema.
+#
+# Os campos de jogo são os mesmos do trio equivalente do app Sistema
+# (`ItemSistema`/`ArmaSistema`/`ArmaduraSistema`), para a cópia para a ficha
+# ser campo a campo, sem conversão.
+#
+# Por que `descricao` ALÉM do `conteudo` herdado — são coisas diferentes:
+#   `descricao` é o texto do equipamento, o que VIAJA para a ficha ao copiar
+#     (e `Item.descricao` lá é richtext, o mesmo formato daqui);
+#   `conteudo` é o Markdown de lore da campanha, que toda entidade de mundo
+#     tem e que fica no Mundo — mandá-lo para a ficha entregaria os `##`
+#     literais dentro do editor richtext de lá.
+# ---------------------------------------------------------------------------
+
+class EquipamentoCampanha(EntidadeMundo):
+
+    foto = CloudinaryField("Foto", blank=True, null=True)
+    descricao = models.TextField(blank=True)
+    peso = models.DecimalField(default=0, max_digits=20, decimal_places=1)
+    valor = models.DecimalField(default=0, max_digits=20, decimal_places=2)
+    qualidade = models.CharField(max_length=100, blank=True)
+
+    class Meta(EntidadeMundo.Meta):
+        abstract = True
+
+
+class ItemCampanha(EquipamentoCampanha):
+    """Item exclusivo desta campanha."""
+
+    campanha = models.ForeignKey(Campanha, on_delete=models.CASCADE, related_name="itens_campanha")
+
+    pasta = models.ForeignKey(
+        "Pasta", on_delete=models.SET_NULL, null=True, blank=True, related_name="itens_campanha"
+    )
+
+    class Meta(EquipamentoCampanha.Meta):
+        verbose_name = "Item da campanha"
+        verbose_name_plural = "Itens da campanha"
+
+
+class ArmaCampanha(EquipamentoCampanha):
+    """Arma exclusiva desta campanha."""
+
+    campanha = models.ForeignKey(Campanha, on_delete=models.CASCADE, related_name="armas_campanha")
+
+    pasta = models.ForeignKey(
+        "Pasta", on_delete=models.SET_NULL, null=True, blank=True, related_name="armas_campanha"
+    )
+
+    ataque = models.IntegerField(default=0, blank=True)
+    dano = models.CharField(default="1d4", max_length=30, blank=True)
+    dano_extra = models.CharField(default="0", max_length=30, blank=True)
+    margem_critico = models.CharField(default="20", max_length=30, blank=True)
+    critico = models.CharField(default="+1d", max_length=30, blank=True)
+    alcance = models.CharField(default="Adjacente", max_length=30, blank=True)
+    tipo_dano = models.CharField(default="Cortante", max_length=30, blank=True)
+    empunhadura = models.CharField(default="Leve", max_length=30, blank=True)
+
+    class Meta(EquipamentoCampanha.Meta):
+        verbose_name = "Arma da campanha"
+        verbose_name_plural = "Armas da campanha"
+
+
+class ArmaduraCampanha(EquipamentoCampanha):
+    """Armadura exclusiva desta campanha."""
+
+    campanha = models.ForeignKey(Campanha, on_delete=models.CASCADE, related_name="armaduras_campanha")
+
+    pasta = models.ForeignKey(
+        "Pasta", on_delete=models.SET_NULL, null=True, blank=True, related_name="armaduras_campanha"
+    )
+
+    defesa = models.IntegerField(default=0, blank=True)
+
+    class Meta(EquipamentoCampanha.Meta):
+        verbose_name = "Armadura da campanha"
+        verbose_name_plural = "Armaduras da campanha"
