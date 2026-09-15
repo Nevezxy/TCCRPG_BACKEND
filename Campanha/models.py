@@ -857,6 +857,13 @@ class Criatura(EntidadeMundo):
         Local, on_delete=models.SET_NULL, null=True, blank=True, related_name="criaturas"
     )
 
+    # Mesmo mecanismo de NPC.ficha: JSON livre editado pelo mesmo editor de
+    # ficha (`ficha-rpg-editor.html`), reaproveitado aqui sem duplicar o
+    # formato — a criatura também é um "bloco de personagem" jogável (ex.:
+    # para virar um monstro controlável ou ser usada como referência de
+    # combate pelo mestre).
+    ficha = models.JSONField(blank=True, null=True)
+
     class Meta(EntidadeMundo.Meta):
         verbose_name = "Criatura"
         verbose_name_plural = "Criaturas"
@@ -955,8 +962,8 @@ class ItemCampanha(EquipamentoCampanha):
     )
 
     class Meta(EquipamentoCampanha.Meta):
-        verbose_name = "Item da campanha"
-        verbose_name_plural = "Itens da campanha"
+        verbose_name = "Item"
+        verbose_name_plural = "Itens"
 
 
 class ArmaCampanha(EquipamentoCampanha):
@@ -978,8 +985,8 @@ class ArmaCampanha(EquipamentoCampanha):
     empunhadura = models.CharField(default="Leve", max_length=30, blank=True)
 
     class Meta(EquipamentoCampanha.Meta):
-        verbose_name = "Arma da campanha"
-        verbose_name_plural = "Armas da campanha"
+        verbose_name = "Arma"
+        verbose_name_plural = "Armas"
 
 
 class ArmaduraCampanha(EquipamentoCampanha):
@@ -994,8 +1001,8 @@ class ArmaduraCampanha(EquipamentoCampanha):
     defesa = models.IntegerField(default=0, blank=True)
 
     class Meta(EquipamentoCampanha.Meta):
-        verbose_name = "Armadura da campanha"
-        verbose_name_plural = "Armaduras da campanha"
+        verbose_name = "Armadura"
+        verbose_name_plural = "Armaduras"
 
 
 # ---------------------------------------------------------------------------

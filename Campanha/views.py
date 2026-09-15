@@ -3047,13 +3047,13 @@ raca_lista, raca_detalhe, raca_conexoes = _crud_mundo(
     "raca", "racas", Raca, RacaSerializer, "Raça"
 )
 itemcampanha_lista, itemcampanha_detalhe, itemcampanha_conexoes = _crud_mundo(
-    "itemcampanha", "itens_campanha", ItemCampanha, ItemCampanhaSerializer, "Item da campanha"
+    "itemcampanha", "itens_campanha", ItemCampanha, ItemCampanhaSerializer, "Item"
 )
 armacampanha_lista, armacampanha_detalhe, armacampanha_conexoes = _crud_mundo(
-    "armacampanha", "armas_campanha", ArmaCampanha, ArmaCampanhaSerializer, "Arma da campanha"
+    "armacampanha", "armas_campanha", ArmaCampanha, ArmaCampanhaSerializer, "Arma"
 )
 armaduracampanha_lista, armaduracampanha_detalhe, armaduracampanha_conexoes = _crud_mundo(
-    "armaduracampanha", "armaduras_campanha", ArmaduraCampanha, ArmaduraCampanhaSerializer, "Armadura da campanha"
+    "armaduracampanha", "armaduras_campanha", ArmaduraCampanha, ArmaduraCampanhaSerializer, "Armadura"
 )
 
 
