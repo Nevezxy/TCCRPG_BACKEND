@@ -218,6 +218,9 @@ def _dados_produto(produto, resumos, categorias_ids):
         "esgotado": produto.esgotado,
         "categorias": categorias_ids,
         "origem": resumos.get((produto.content_type.model, produto.object_id)),
+        # Preenchido só para o mestre (ver `montar_vitrine`): se este produto
+        # está na seleção que os jogadores enxergam agora.
+        "na_vitrine": True,
     }
 
 
@@ -293,7 +296,16 @@ def montar_vitrine(campanha, usuario, agora=None):
 
         dados = _dados_categoria(categoria, agora)
         dados["total_produtos"] = len(pares)
-        dados["produtos"] = [d for p, d in pares if p.id in ids_selecionados]
+
+        if e_mestre:
+            # O mestre precisa ver o ESTOQUE INTEIRO para administrá-lo —
+            # com a rotação filtrando, metade dos produtos ficaria
+            # inalcançável para editar. Cada um vem marcado com
+            # `na_vitrine`, que é o que os jogadores estão vendo agora.
+            dados["produtos"] = [{**d, "na_vitrine": p.id in ids_selecionados} for p, d in pares]
+        else:
+            dados["produtos"] = [d for p, d in pares if p.id in ids_selecionados]
+
         saida.append(dados)
 
         if dados["rotacao"]["proxima_em"] and len(pares) > (categoria.rotacao_quantidade or 0):

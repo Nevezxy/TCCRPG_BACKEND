@@ -1633,6 +1633,17 @@ class RotacaoTests(LojaBaseTestCase):
 
         self.assertEqual(len(self._selecao(timezone.now())), 6)
 
+    def test_mestre_ve_o_estoque_inteiro_marcado_pelo_que_esta_na_vitrine(self):
+        """Com a rotação filtrando também para o mestre, metade dos produtos
+        ficaria inalcançável para editar."""
+        self.autentica_como(self.mestre_a)
+
+        response = self.client.get(f"/campanha/{self.campanha_a.id}/loja/")
+
+        produtos = response.data["categorias"][0]["produtos"]
+        self.assertEqual(len(produtos), 6)
+        self.assertEqual(sum(1 for p in produtos if p["na_vitrine"]), 2)
+
     def test_vitrine_informa_quando_a_proxima_rotacao_acontece(self):
         self.autentica_como(self.jogador_a)
 
