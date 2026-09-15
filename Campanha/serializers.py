@@ -30,6 +30,8 @@ from .models import (
     ArmaduraCampanha,
     CategoriaLoja,
     ProdutoLoja,
+    TransacaoLoja,
+    AnuncioComercioLivre,
     modelos_conectaveis,
     modelos_vendaveis,
 )
@@ -1233,3 +1235,60 @@ class ProdutoLojaSerializer(serializers.ModelSerializer):
         attrs["content_type"] = ContentType.objects.get_for_model(modelo)
         attrs["object_id"] = objeto.pk
         return attrs
+
+
+class TransacaoLojaSerializer(serializers.ModelSerializer):
+    """Extrato — só leitura. Quem grava é a view de compra, dentro da
+    transação do banco; nada aqui pode ser escrito pelo cliente."""
+
+    comprador_nome = serializers.CharField(source="comprador_personagem.nome", read_only=True, default=None)
+    vendedor_nome = serializers.CharField(source="vendedor_personagem.nome", read_only=True, default=None)
+
+    class Meta:
+        model = TransacaoLoja
+        fields = [
+            "id", "campanha", "tipo", "comprador_personagem", "comprador_nome",
+            "vendedor_personagem", "vendedor_nome", "produto", "nome_item",
+            "preco_unitario", "quantidade", "total", "criado_em", "anuncio",
+        ]
+        read_only_fields = fields
+
+
+class AnuncioComercioLivreSerializer(serializers.ModelSerializer):
+    """
+    Anúncio do Comércio Livre. `item` é escolhido na criação e nunca muda
+    depois — trocar o item de um anúncio seria, na prática, outro anúncio, e
+    deixaria `Item.vendas` apontando para o item errado.
+
+    O item vem resolvido em `item_dados` com o mesmo formato que a loja usa
+    para os produtos, para o card do comprador ser o mesmo componente.
+    """
+
+    item_dados = serializers.SerializerMethodField(read_only=True)
+    vendedor_nome = serializers.CharField(source="vendedor_personagem.nome", read_only=True)
+
+    class Meta:
+        model = AnuncioComercioLivre
+        fields = [
+            "id", "campanha", "vendedor_personagem", "vendedor_nome",
+            "item", "item_dados", "quantidade", "preco", "ativo",
+            "criado_em", "atualizado_em",
+        ]
+        read_only_fields = (
+            "campanha", "vendedor_personagem", "ativo", "criado_em", "atualizado_em",
+        )
+
+    @extend_schema_field(serializers.DictField(allow_null=True))
+    def get_item_dados(self, obj):
+        from .comercio import concreto
+        from .loja import resumos_de_origens
+
+        if obj.item is None:
+            return None
+        real = concreto(obj.item)
+        return resumos_de_origens([real]).get((real._meta.model_name, real.pk))
+
+    def validate_preco(self, preco):
+        if preco < 0:
+            raise serializers.ValidationError("O preço não pode ser negativo.")
+        return preco

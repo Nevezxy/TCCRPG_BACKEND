@@ -34,7 +34,7 @@ from datetime import timedelta
 
 from django.utils import timezone
 
-from Midia.services import ler_ajustes, url_de
+from Midia.services import copiar_ajuste, ler_ajustes, url_de
 
 # ---------------------------------------------------------------------------
 # Identificação das origens
@@ -49,6 +49,11 @@ CLASSE_POR_MODELO = {
     "itemcampanha": "item",
     "armacampanha": "arma",
     "armaduracampanha": "armadura",
+    # Os próprios models da ficha: o Comércio Livre anuncia itens que já
+    # estão no inventário de alguém, e o card do anúncio é o mesmo da loja.
+    "item": "item",
+    "arma": "arma",
+    "armadura": "armadura",
 }
 
 # Campos de jogo específicos de cada formato, além dos comuns.
@@ -342,3 +347,51 @@ def produto_a_venda(produto, usuario, campanha, agora=None):
             return True
 
     return False
+
+
+# ---------------------------------------------------------------------------
+# Origem -> ficha
+# ---------------------------------------------------------------------------
+
+def modelo_da_ficha(classe):
+    """O model da ficha correspondente ao formato do equipamento."""
+    from Personagem.models import Arma, Armadura, Item
+
+    return {"item": Item, "arma": Arma, "armadura": Armadura}[classe]
+
+
+def serializer_da_ficha(classe):
+    from Personagem.serializers import ArmaSerializer, ArmaduraSerializer, ItemSerializer
+
+    return {"item": ItemSerializer, "arma": ArmaSerializer, "armadura": ArmaduraSerializer}[classe]
+
+
+def copiar_para_ficha(origem, personagem, quantidade=1):
+    """
+    Cria na ficha uma linha NOVA a partir de um equipamento de qualquer das
+    seis origens (Sistema ou exclusivo da campanha). O original nunca é
+    tocado.
+
+    A imagem vai por referência (mesmo `public_id`) com o enquadramento
+    junto — seguro porque a fila de exclusão do app Midia recheca o uso de
+    cada arquivo antes de apagar. A coluna de imagem da ficha não aceita
+    NULL, daí o `or ""`.
+
+    Uma compra de 3 unidades vira UMA linha com `quantidade=3`, e nunca
+    mexe numa linha que já existe: empilhar por nome alteraria um item que o
+    jogador pode ter renomeado, recebido bônus ou trocado a foto.
+    """
+    classe = classe_de(origem)
+    campos = CAMPOS_COMUNS + CAMPOS_POR_CLASSE[classe]
+    dados = {campo: getattr(origem, campo) for campo in campos}
+
+    copia = modelo_da_ficha(classe).objects.create(
+        personagem=personagem,
+        foto=getattr(origem, "foto", None) or "",
+        quantidade=quantidade,
+        **dados,
+    )
+
+    copiar_ajuste(origem, copia, ["foto"])
+
+    return copia

@@ -472,6 +472,38 @@ urlpatterns = [
         name="produto_loja_detalhe"
     ),
 
+    path(
+        "loja/produtos/<int:produto_pk>/comprar/",
+        views.comprar_produto_loja,
+        name="comprar_produto_loja"
+    ),
+
+    path(
+        "<int:pk>/loja/transacoes/",
+        views.transacao_loja_lista,
+        name="transacao_loja_lista"
+    ),
+
+
+    # Comércio Livre — jogadores vendendo entre si.
+    path(
+        "<int:pk>/comercio/anuncios/",
+        views.anuncio_lista,
+        name="anuncio_lista"
+    ),
+
+    path(
+        "comercio/anuncios/<int:anuncio_pk>/",
+        views.anuncio_detalhe,
+        name="anuncio_detalhe"
+    ),
+
+    path(
+        "comercio/anuncios/<int:anuncio_pk>/comprar/",
+        views.comprar_anuncio,
+        name="comprar_anuncio"
+    ),
+
 
     # Pastas — árvore de organização estilo Obsidian (seção 3)
     path(

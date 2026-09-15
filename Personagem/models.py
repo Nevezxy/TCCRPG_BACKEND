@@ -140,7 +140,17 @@ class Item(models.Model):
     qualidade = models.CharField(max_length=100, blank=True)
     quantidade = models.PositiveIntegerField(default=1)
     consumivel = models.BooleanField(default=False)
-    
+
+    # Está à venda no Comércio Livre da campanha? Fica em `Item` (e não nos
+    # três models) porque `Arma` e `Armadura` herdam dele por herança
+    # multi-tabela — um campo e uma migration cobrem os três itens da ficha.
+    #
+    # É a fonte única de verdade do anúncio: marcar aqui CRIA o anúncio na
+    # campanha do personagem (preço = `valor`, quantidade = `quantidade`, que
+    # o jogador refina depois na aba Loja); desmarcar o retira. Quem mantém
+    # os dois lados em sincronia é `Campanha.comercio`.
+    vendas = models.BooleanField(default=False)
+
     def __str__(self):
         return f"{self.nome} ({self.personagem.nome})"
     

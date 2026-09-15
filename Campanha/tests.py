@@ -14,7 +14,7 @@ from . import loja
 from .models import (
     Campanha, NPC, Local, Organizacao, Pasta, TipoConexao, Conexao, Imagem,
     ItemCampanha, ArmaCampanha, ArmaduraCampanha,
-    CategoriaLoja, ProdutoLoja,
+    CategoriaLoja, ProdutoLoja, TransacaoLoja, AnuncioComercioLivre,
 )
 
 
@@ -1667,3 +1667,566 @@ class RotacaoTests(LojaBaseTestCase):
         self.assertFalse(loja.produto_a_venda(escondido, self.jogador_a, self.campanha_a, agora))
         a_mostra = next(p for p in self.produtos if p.id in visiveis)
         self.assertTrue(loja.produto_a_venda(a_mostra, self.jogador_a, self.campanha_a, agora))
+
+
+class CompraLojaTests(LojaBaseTestCase):
+    """
+    O caminho do dinheiro e do item. As checagens que importam acontecem
+    todas dentro da transação, com as linhas travadas — no PostgreSQL de
+    produção o `select_for_update` serializa duas compras simultâneas da
+    mesma linha. (O SQLite dos testes ignora o FOR UPDATE, então aqui o que
+    se verifica é a LÓGICA: saldo, estoque, rotação e idempotência.)
+    """
+
+    def setUp(self):
+        super().setUp()
+        self.personagem = Personagem.objects.create(
+            usuario=self.jogador_a, nome="Arkan", dinheiro="500.00"
+        )
+        self.campanha_a.personagens.add(self.personagem)
+
+        self.categoria = CategoriaLoja.objects.create(campanha=self.campanha_a, nome="Geral")
+        self.produto = self.cria_produto(self.arma_sistema, preco="150.00", quantidade_disponivel=3)
+        self.produto.categorias.add(self.categoria)
+
+        self.url = f"/campanha/loja/produtos/{self.produto.id}/comprar/"
+
+    def comprar(self, **corpo):
+        return self.client.post(self.url, {"personagem": self.personagem.id, **corpo}, format="json")
+
+    def test_compra_desconta_o_dinheiro_e_entrega_o_item(self):
+        self.autentica_como(self.jogador_a)
+
+        response = self.comprar()
+
+        self.assertEqual(response.status_code, status.HTTP_201_CREATED, response.data)
+        self.personagem.refresh_from_db()
+        self.assertEqual(str(self.personagem.dinheiro), "350.00")
+
+        arma = Arma.objects.get(personagem=self.personagem)
+        self.assertEqual(arma.nome, "Espada")
+        self.assertEqual(arma.dano, "1d8")
+        self.assertEqual(arma.quantidade, 1)
+
+        self.produto.refresh_from_db()
+        self.assertEqual(self.produto.quantidade_disponivel, 2)
+
+    def test_compra_de_varias_unidades_vira_uma_linha_so(self):
+        self.autentica_como(self.jogador_a)
+
+        response = self.comprar(quantidade=3)
+
+        self.assertEqual(response.status_code, status.HTTP_201_CREATED, response.data)
+        self.personagem.refresh_from_db()
+        self.assertEqual(str(self.personagem.dinheiro), "50.00")
+        self.assertEqual(Arma.objects.filter(personagem=self.personagem).count(), 1)
+        self.assertEqual(Arma.objects.get().quantidade, 3)
+        self.produto.refresh_from_db()
+        self.assertEqual(self.produto.quantidade_disponivel, 0)
+
+    def test_compra_nunca_mexe_numa_linha_que_ja_existe(self):
+        """Comprar de novo cria outra linha — não soma numa que o jogador
+        pode ter renomeado ou dado bônus."""
+        self.autentica_como(self.jogador_a)
+
+        self.comprar()
+        self.comprar()
+
+        self.assertEqual(Arma.objects.filter(personagem=self.personagem).count(), 2)
+
+    def test_sem_dinheiro_a_compra_e_recusada_e_nada_muda(self):
+        self.personagem.dinheiro = "100.00"
+        self.personagem.save(update_fields=["dinheiro"])
+        self.autentica_como(self.jogador_a)
+
+        response = self.comprar()
+
+        self.assertEqual(response.status_code, status.HTTP_400_BAD_REQUEST)
+        self.assertIn("Dinheiro insuficiente", response.data["erro"])
+        self.personagem.refresh_from_db()
+        self.assertEqual(str(self.personagem.dinheiro), "100.00")
+        self.assertFalse(Arma.objects.exists())
+        self.produto.refresh_from_db()
+        self.assertEqual(self.produto.quantidade_disponivel, 3)
+
+    def test_estoque_esgotado_nao_pode_mais_ser_comprado(self):
+        self.produto.quantidade_disponivel = 0
+        self.produto.save(update_fields=["quantidade_disponivel"])
+        self.autentica_como(self.jogador_a)
+
+        response = self.comprar()
+
+        self.assertEqual(response.status_code, status.HTTP_409_CONFLICT)
+        self.assertFalse(Arma.objects.exists())
+
+    def test_pedir_mais_do_que_o_estoque_e_recusado(self):
+        self.autentica_como(self.jogador_a)
+
+        response = self.comprar(quantidade=4)
+
+        self.assertEqual(response.status_code, status.HTTP_409_CONFLICT)
+        self.assertEqual(response.data["quantidade_disponivel"], 3)
+
+    def test_estoque_ilimitado_nao_esgota(self):
+        self.produto.quantidade_disponivel = None
+        self.produto.save(update_fields=["quantidade_disponivel"])
+        self.autentica_como(self.jogador_a)
+
+        self.comprar()
+        self.comprar()
+
+        self.produto.refresh_from_db()
+        self.assertIsNone(self.produto.quantidade_disponivel)
+        self.assertEqual(Arma.objects.count(), 2)
+
+    def test_produto_fora_de_venda_e_recusado(self):
+        self.produto.disponivel = False
+        self.produto.save(update_fields=["disponivel"])
+        self.autentica_como(self.jogador_a)
+
+        self.assertEqual(self.comprar().status_code, status.HTTP_409_CONFLICT)
+
+    def test_a_mesma_chave_de_idempotencia_cobra_uma_vez_so(self):
+        """É o que protege de duplo toque e de retry de rede — o botão
+        desabilitado no cliente não cobre nenhum dos dois."""
+        self.autentica_como(self.jogador_a)
+
+        primeira = self.comprar(chave_idempotencia="abc-123")
+        segunda = self.comprar(chave_idempotencia="abc-123")
+
+        self.assertEqual(primeira.status_code, status.HTTP_201_CREATED)
+        self.assertEqual(segunda.status_code, status.HTTP_200_OK)
+        self.assertEqual(TransacaoLoja.objects.count(), 1)
+        self.assertEqual(Arma.objects.count(), 1)
+        self.personagem.refresh_from_db()
+        self.assertEqual(str(self.personagem.dinheiro), "350.00")
+
+    def test_produto_escondido_pela_rotacao_nao_pode_ser_comprado_por_id(self):
+        """O cliente não decide o que está à venda — a rotação é do servidor."""
+        self.categoria.rotacao_ativa = True
+        self.categoria.rotacao_quantidade = 1
+        self.categoria.save(update_fields=["rotacao_ativa", "rotacao_quantidade"])
+        outro = self.cria_produto(self.item_sistema, preco="5.00")
+        outro.categorias.add(self.categoria)
+
+        visiveis = {
+            p.id
+            for p in loja.selecionar(self.categoria, [self.produto, outro], timezone.now())
+        }
+        escondido = self.produto if self.produto.id not in visiveis else outro
+        self.autentica_como(self.jogador_a)
+
+        response = self.client.post(
+            f"/campanha/loja/produtos/{escondido.id}/comprar/",
+            {"personagem": self.personagem.id},
+            format="json",
+        )
+
+        self.assertEqual(response.status_code, status.HTTP_409_CONFLICT)
+
+    def test_personagem_de_fora_da_campanha_nao_compra(self):
+        de_fora = Personagem.objects.create(usuario=self.jogador_a, nome="De fora", dinheiro="999.00")
+        self.autentica_como(self.jogador_a)
+
+        response = self.client.post(self.url, {"personagem": de_fora.id}, format="json")
+
+        self.assertEqual(response.status_code, status.HTTP_400_BAD_REQUEST)
+
+    def test_jogador_nao_compra_para_a_ficha_de_outro(self):
+        alheio = Personagem.objects.create(usuario=self.mestre_a, nome="Do mestre", dinheiro="999.00")
+        self.campanha_a.personagens.add(alheio)
+        self.autentica_como(self.jogador_a)
+
+        response = self.client.post(self.url, {"personagem": alheio.id}, format="json")
+
+        self.assertEqual(response.status_code, status.HTTP_403_FORBIDDEN)
+
+    def test_nao_participante_nao_compra(self):
+        self.autentica_como(self.jogador_b)
+
+        self.assertEqual(self.comprar().status_code, status.HTTP_403_FORBIDDEN)
+
+    def test_quantidade_invalida_e_recusada(self):
+        self.autentica_como(self.jogador_a)
+
+        self.assertEqual(self.comprar(quantidade=0).status_code, status.HTTP_400_BAD_REQUEST)
+        self.assertEqual(self.comprar(quantidade="muitas").status_code, status.HTTP_400_BAD_REQUEST)
+
+    def test_extrato_do_jogador_mostra_so_o_que_e_dele(self):
+        outro_personagem = Personagem.objects.create(
+            usuario=self.mestre_a, nome="Do mestre", dinheiro="999.00"
+        )
+        self.campanha_a.personagens.add(outro_personagem)
+        self.autentica_como(self.jogador_a)
+        self.comprar()
+        self.autentica_como(self.mestre_a)
+        self.client.post(self.url, {"personagem": outro_personagem.id}, format="json")
+
+        self.autentica_como(self.jogador_a)
+        do_jogador = self.client.get(f"/campanha/{self.campanha_a.id}/loja/transacoes/")
+        self.autentica_como(self.mestre_a)
+        do_mestre = self.client.get(f"/campanha/{self.campanha_a.id}/loja/transacoes/")
+
+        self.assertEqual(len(do_jogador.data), 1)
+        self.assertEqual(len(do_mestre.data), 2)
+
+    def test_compra_de_exclusivo_da_campanha_funciona_igual(self):
+        produto = self.cria_produto(self.item_exclusivo, preco="80.00")
+        self.autentica_como(self.jogador_a)
+
+        response = self.client.post(
+            f"/campanha/loja/produtos/{produto.id}/comprar/",
+            {"personagem": self.personagem.id},
+            format="json",
+        )
+
+        self.assertEqual(response.status_code, status.HTTP_201_CREATED, response.data)
+        self.assertEqual(Item.objects.get(personagem=self.personagem).nome, "Poção do Arauto")
+        # O exclusivo da campanha continua intocado.
+        self.item_exclusivo.refresh_from_db()
+        self.assertEqual(self.item_exclusivo.nome, "Poção do Arauto")
+
+
+# ---------------------------------------------------------------------------
+# Comércio Livre
+# ---------------------------------------------------------------------------
+
+class ComercioLivreTests(LojaBaseTestCase):
+
+    def setUp(self):
+        super().setUp()
+        self.vendedor = Personagem.objects.create(
+            usuario=self.jogador_a, nome="Vendedor", dinheiro="100.00"
+        )
+        self.comprador = Personagem.objects.create(
+            usuario=self.mestre_a, nome="Comprador", dinheiro="500.00"
+        )
+        self.campanha_a.personagens.add(self.vendedor, self.comprador)
+
+        self.item = Item.objects.create(
+            personagem=self.vendedor, nome="Poção", valor="50.00", quantidade=3
+        )
+
+    # -- pôr à venda --------------------------------------------------------
+
+    def test_marcar_vendas_na_ficha_anuncia_automaticamente(self):
+        """`vendas=True` precisa colocar à venda de verdade — senão o campo
+        seria decoração."""
+        self.autentica_como(self.jogador_a)
+
+        response = self.client.patch(
+            f"/personagem/itens/{self.item.id}/", {"vendas": True}, format="json"
+        )
+
+        self.assertEqual(response.status_code, status.HTTP_200_OK, response.data)
+        anuncio = AnuncioComercioLivre.objects.get()
+        self.assertTrue(anuncio.ativo)
+        self.assertEqual(anuncio.campanha_id, self.campanha_a.id)
+        # Padrões: o valor do próprio item e tudo o que ele tem.
+        self.assertEqual(str(anuncio.preco), "50.00")
+        self.assertEqual(anuncio.quantidade, 3)
+
+    def test_desmarcar_vendas_retira_da_venda(self):
+        self.autentica_como(self.jogador_a)
+        self.client.patch(f"/personagem/itens/{self.item.id}/", {"vendas": True}, format="json")
+
+        self.client.patch(f"/personagem/itens/{self.item.id}/", {"vendas": False}, format="json")
+
+        self.assertFalse(AnuncioComercioLivre.objects.get().ativo)
+        self.item.refresh_from_db()
+        self.assertFalse(self.item.vendas)
+
+    def test_patch_que_nao_toca_em_vendas_nao_mexe_no_anuncio(self):
+        self.autentica_como(self.jogador_a)
+        self.client.patch(f"/personagem/itens/{self.item.id}/", {"vendas": True}, format="json")
+        anuncio = AnuncioComercioLivre.objects.get()
+        anuncio.preco = "80.00"
+        anuncio.save(update_fields=["preco"])
+
+        self.client.patch(f"/personagem/itens/{self.item.id}/", {"peso": "2.0"}, format="json")
+
+        anuncio.refresh_from_db()
+        self.assertTrue(anuncio.ativo)
+        # O preço ajustado pelo jogador na aba Loja não é reescrito.
+        self.assertEqual(str(anuncio.preco), "80.00")
+
+    def test_personagem_sem_campanha_nao_consegue_anunciar(self):
+        solto = Personagem.objects.create(usuario=self.jogador_a, nome="Solitário")
+        item = Item.objects.create(personagem=solto, nome="Pedra", valor="1.00")
+        self.autentica_como(self.jogador_a)
+
+        response = self.client.patch(f"/personagem/itens/{item.id}/", {"vendas": True}, format="json")
+
+        self.assertEqual(response.status_code, status.HTTP_400_BAD_REQUEST)
+        self.assertIn("vendas", response.data)
+        item.refresh_from_db()
+        # E o item NÃO fica gravado dizendo que está à venda.
+        self.assertFalse(item.vendas)
+
+    def test_personagem_em_duas_campanhas_precisa_escolher(self):
+        self.campanha_b.personagens.add(self.vendedor)
+        self.campanha_b.jogadores.add(self.jogador_a)
+        self.autentica_como(self.jogador_a)
+
+        pela_ficha = self.client.patch(
+            f"/personagem/itens/{self.item.id}/", {"vendas": True}, format="json"
+        )
+        # Pela aba Loja, onde a campanha é explícita, funciona.
+        pela_loja = self.client.post(
+            f"/campanha/{self.campanha_a.id}/comercio/anuncios/",
+            {"item": self.item.id, "preco": "40.00", "quantidade": 1},
+            format="json",
+        )
+
+        self.assertEqual(pela_ficha.status_code, status.HTTP_400_BAD_REQUEST)
+        self.assertEqual(pela_loja.status_code, status.HTTP_201_CREATED, pela_loja.data)
+
+    def test_jogador_anuncia_pela_aba_loja_com_preco_proprio(self):
+        self.autentica_como(self.jogador_a)
+
+        response = self.client.post(
+            f"/campanha/{self.campanha_a.id}/comercio/anuncios/",
+            {"item": self.item.id, "preco": "120.00", "quantidade": 2},
+            format="json",
+        )
+
+        self.assertEqual(response.status_code, status.HTTP_201_CREATED, response.data)
+        self.assertEqual(response.data["quantidade"], 2)
+        self.assertEqual(response.data["item_dados"]["nome"], "Poção")
+        self.item.refresh_from_db()
+        self.assertTrue(self.item.vendas)
+
+    def test_nao_da_para_anunciar_mais_do_que_se_tem(self):
+        self.autentica_como(self.jogador_a)
+
+        response = self.client.post(
+            f"/campanha/{self.campanha_a.id}/comercio/anuncios/",
+            {"item": self.item.id, "preco": "10.00", "quantidade": 99},
+            format="json",
+        )
+
+        self.assertEqual(response.status_code, status.HTTP_400_BAD_REQUEST)
+
+    def test_jogador_nao_anuncia_item_de_outro(self):
+        alheio = Item.objects.create(personagem=self.comprador, nome="Do outro", valor="10.00")
+        self.autentica_como(self.jogador_a)
+
+        response = self.client.post(
+            f"/campanha/{self.campanha_a.id}/comercio/anuncios/",
+            {"item": alheio.id, "preco": "10.00", "quantidade": 1},
+            format="json",
+        )
+
+        self.assertEqual(response.status_code, status.HTTP_403_FORBIDDEN)
+
+    def test_meus_anuncios_filtra_pelo_usuario(self):
+        outro_item = Item.objects.create(personagem=self.comprador, nome="Escudo", valor="30.00")
+        self.autentica_como(self.jogador_a)
+        self.client.post(
+            f"/campanha/{self.campanha_a.id}/comercio/anuncios/",
+            {"item": self.item.id, "preco": "10.00", "quantidade": 1},
+            format="json",
+        )
+        self.autentica_como(self.mestre_a)
+        self.client.post(
+            f"/campanha/{self.campanha_a.id}/comercio/anuncios/",
+            {"item": outro_item.id, "preco": "10.00", "quantidade": 1},
+            format="json",
+        )
+
+        self.autentica_como(self.jogador_a)
+        todos = self.client.get(f"/campanha/{self.campanha_a.id}/comercio/anuncios/")
+        meus = self.client.get(f"/campanha/{self.campanha_a.id}/comercio/anuncios/?meus=1")
+
+        self.assertEqual(len(todos.data), 2)
+        self.assertEqual([a["item_dados"]["nome"] for a in meus.data], ["Poção"])
+
+    def test_retirar_da_venda_encerra_o_anuncio_sem_apagar(self):
+        self.autentica_como(self.jogador_a)
+        criado = self.client.post(
+            f"/campanha/{self.campanha_a.id}/comercio/anuncios/",
+            {"item": self.item.id, "preco": "10.00", "quantidade": 1},
+            format="json",
+        )
+
+        self.client.delete(f"/campanha/comercio/anuncios/{criado.data['id']}/")
+
+        anuncio = AnuncioComercioLivre.objects.get()
+        self.assertFalse(anuncio.ativo)
+        self.item.refresh_from_db()
+        self.assertFalse(self.item.vendas)
+
+    # -- comprar ------------------------------------------------------------
+
+    def _anuncia(self, preco="100.00", quantidade=2):
+        self.autentica_como(self.jogador_a)
+        resposta = self.client.post(
+            f"/campanha/{self.campanha_a.id}/comercio/anuncios/",
+            {"item": self.item.id, "preco": preco, "quantidade": quantidade},
+            format="json",
+        )
+        return resposta.data["id"]
+
+    def test_venda_transfere_item_e_dinheiro(self):
+        anuncio_id = self._anuncia(preco="100.00", quantidade=2)
+        self.autentica_como(self.mestre_a)
+
+        response = self.client.post(
+            f"/campanha/comercio/anuncios/{anuncio_id}/comprar/",
+            {"personagem": self.comprador.id, "quantidade": 2},
+            format="json",
+        )
+
+        self.assertEqual(response.status_code, status.HTTP_201_CREATED, response.data)
+        self.vendedor.refresh_from_db()
+        self.comprador.refresh_from_db()
+        self.assertEqual(str(self.comprador.dinheiro), "300.00")
+        self.assertEqual(str(self.vendedor.dinheiro), "300.00")
+
+        # O item saiu (parcialmente) do vendedor e entrou no comprador.
+        self.item.refresh_from_db()
+        self.assertEqual(self.item.quantidade, 1)
+        comprado = Item.objects.get(personagem=self.comprador)
+        self.assertEqual(comprado.nome, "Poção")
+        self.assertEqual(comprado.quantidade, 2)
+
+    def test_vender_tudo_remove_a_linha_do_vendedor(self):
+        anuncio_id = self._anuncia(preco="10.00", quantidade=3)
+        self.autentica_como(self.mestre_a)
+
+        self.client.post(
+            f"/campanha/comercio/anuncios/{anuncio_id}/comprar/",
+            {"personagem": self.comprador.id, "quantidade": 3},
+            format="json",
+        )
+
+        self.assertFalse(Item.objects.filter(pk=self.item.pk).exists())
+        self.assertFalse(AnuncioComercioLivre.objects.get().ativo)
+        self.assertEqual(Item.objects.get(personagem=self.comprador).quantidade, 3)
+
+    def test_arma_vendida_chega_como_arma(self):
+        """Na herança multi-tabela, `Item.objects.get` devolve um Item mesmo
+        para uma arma — sem resolver o tipo concreto, o dano se perderia."""
+        arma = Arma.objects.create(
+            personagem=self.vendedor, nome="Espada", valor="10.00", quantidade=1, dano="2d6"
+        )
+        self.autentica_como(self.jogador_a)
+        criado = self.client.post(
+            f"/campanha/{self.campanha_a.id}/comercio/anuncios/",
+            {"item": arma.item_ptr_id, "preco": "10.00", "quantidade": 1},
+            format="json",
+        )
+        self.autentica_como(self.mestre_a)
+
+        self.client.post(
+            f"/campanha/comercio/anuncios/{criado.data['id']}/comprar/",
+            {"personagem": self.comprador.id},
+            format="json",
+        )
+
+        comprada = Arma.objects.get(personagem=self.comprador)
+        self.assertEqual(comprada.dano, "2d6")
+
+    def test_sem_dinheiro_a_venda_e_recusada_e_nada_muda(self):
+        anuncio_id = self._anuncia(preco="1000.00", quantidade=1)
+        self.autentica_como(self.mestre_a)
+
+        response = self.client.post(
+            f"/campanha/comercio/anuncios/{anuncio_id}/comprar/",
+            {"personagem": self.comprador.id},
+            format="json",
+        )
+
+        self.assertEqual(response.status_code, status.HTTP_400_BAD_REQUEST)
+        self.comprador.refresh_from_db()
+        self.vendedor.refresh_from_db()
+        self.assertEqual(str(self.comprador.dinheiro), "500.00")
+        self.assertEqual(str(self.vendedor.dinheiro), "100.00")
+        self.item.refresh_from_db()
+        self.assertEqual(self.item.quantidade, 3)
+
+    def test_nao_da_para_comprar_o_proprio_anuncio(self):
+        anuncio_id = self._anuncia()
+        outro_do_vendedor = Personagem.objects.create(
+            usuario=self.jogador_a, nome="Outro", dinheiro="999.00"
+        )
+        self.campanha_a.personagens.add(outro_do_vendedor)
+        self.autentica_como(self.jogador_a)
+
+        response = self.client.post(
+            f"/campanha/comercio/anuncios/{anuncio_id}/comprar/",
+            {"personagem": self.vendedor.id},
+            format="json",
+        )
+
+        self.assertEqual(response.status_code, status.HTTP_400_BAD_REQUEST)
+
+    def test_comprar_mais_do_que_esta_anunciado_e_recusado(self):
+        anuncio_id = self._anuncia(quantidade=1)
+        self.autentica_como(self.mestre_a)
+
+        response = self.client.post(
+            f"/campanha/comercio/anuncios/{anuncio_id}/comprar/",
+            {"personagem": self.comprador.id, "quantidade": 3},
+            format="json",
+        )
+
+        self.assertEqual(response.status_code, status.HTTP_409_CONFLICT)
+
+    def test_anuncio_ja_encerrado_nao_pode_ser_comprado(self):
+        anuncio_id = self._anuncia()
+        self.client.delete(f"/campanha/comercio/anuncios/{anuncio_id}/")
+        self.autentica_como(self.mestre_a)
+
+        response = self.client.post(
+            f"/campanha/comercio/anuncios/{anuncio_id}/comprar/",
+            {"personagem": self.comprador.id},
+            format="json",
+        )
+
+        self.assertEqual(response.status_code, status.HTTP_409_CONFLICT)
+
+    def test_a_mesma_chave_de_idempotencia_vende_uma_vez_so(self):
+        anuncio_id = self._anuncia(preco="100.00", quantidade=2)
+        self.autentica_como(self.mestre_a)
+        corpo = {"personagem": self.comprador.id, "chave_idempotencia": "venda-1"}
+
+        primeira = self.client.post(f"/campanha/comercio/anuncios/{anuncio_id}/comprar/", corpo, format="json")
+        segunda = self.client.post(f"/campanha/comercio/anuncios/{anuncio_id}/comprar/", corpo, format="json")
+
+        self.assertEqual(primeira.status_code, status.HTTP_201_CREATED)
+        self.assertEqual(segunda.status_code, status.HTTP_200_OK)
+        self.comprador.refresh_from_db()
+        self.assertEqual(str(self.comprador.dinheiro), "400.00")
+        self.assertEqual(TransacaoLoja.objects.filter(tipo="comercio_livre").count(), 1)
+
+    def test_jogador_de_outra_campanha_nao_ve_nem_compra(self):
+        anuncio_id = self._anuncia()
+        self.autentica_como(self.jogador_b)
+
+        listar = self.client.get(f"/campanha/{self.campanha_a.id}/comercio/anuncios/")
+        comprar = self.client.post(
+            f"/campanha/comercio/anuncios/{anuncio_id}/comprar/",
+            {"personagem": self.comprador.id},
+            format="json",
+        )
+
+        self.assertEqual(listar.status_code, status.HTTP_403_FORBIDDEN)
+        self.assertEqual(comprar.status_code, status.HTTP_403_FORBIDDEN)
+
+    def test_venda_aparece_no_extrato_dos_dois_lados(self):
+        anuncio_id = self._anuncia(preco="100.00", quantidade=1)
+        self.autentica_como(self.mestre_a)
+        self.client.post(
+            f"/campanha/comercio/anuncios/{anuncio_id}/comprar/",
+            {"personagem": self.comprador.id},
+            format="json",
+        )
+
+        self.autentica_como(self.jogador_a)
+        do_vendedor = self.client.get(f"/campanha/{self.campanha_a.id}/loja/transacoes/")
+
+        self.assertEqual(len(do_vendedor.data), 1)
+        self.assertEqual(do_vendedor.data[0]["tipo"], "comercio_livre")
+        self.assertEqual(do_vendedor.data[0]["vendedor_nome"], "Vendedor")
+        self.assertEqual(do_vendedor.data[0]["comprador_nome"], "Comprador")

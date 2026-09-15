@@ -5,7 +5,7 @@ from django.db import models
 from django.core.exceptions import ValidationError
 from django.utils import timezone
 
-from Personagem.models import Personagem
+from Personagem.models import Item, Personagem
 from Sistema.models import Sistema
 from app import settings
 from cloudinary.models import CloudinaryField
@@ -1151,3 +1151,124 @@ class ProdutoLoja(models.Model):
     @property
     def esgotado(self):
         return self.quantidade_disponivel is not None and self.quantidade_disponivel <= 0
+
+
+class TransacaoLoja(models.Model):
+    """
+    Registro imutável de uma compra — é o "registrar corretamente a operação"
+    do requisito, e a base do extrato que o mestre consulta.
+
+    Os dados do item são um SNAPSHOT (nome, preço unitário, total): a
+    transação precisa continuar legível depois que o produto sai da loja ou
+    o equipamento de origem é excluído, e por isso as FKs são SET_NULL.
+
+    `chave_idempotencia` é a proteção real contra compra duplicada. O botão
+    desabilitado no cliente não cobre retry de rede, dois toques no celular
+    nem uma reconexão que reenvia o POST; com a chave, o segundo pedido
+    encontra a transação já gravada e devolve ELA, sem cobrar de novo. É
+    `unique` no banco, então nem duas requisições simultâneas passam.
+    """
+
+    TIPOS = [
+        ("loja", "Loja da campanha"),
+        ("comercio_livre", "Comércio livre"),
+    ]
+
+    campanha = models.ForeignKey(Campanha, on_delete=models.CASCADE, related_name="transacoes_loja")
+    tipo = models.CharField(max_length=20, choices=TIPOS, default="loja")
+
+    comprador_personagem = models.ForeignKey(
+        Personagem, on_delete=models.SET_NULL, null=True, blank=True, related_name="compras"
+    )
+    # Nulo nas compras da loja do mestre — lá não há vendedor.
+    vendedor_personagem = models.ForeignKey(
+        Personagem, on_delete=models.SET_NULL, null=True, blank=True, related_name="vendas"
+    )
+
+    produto = models.ForeignKey(
+        ProdutoLoja, on_delete=models.SET_NULL, null=True, blank=True, related_name="transacoes"
+    )
+    # Preenchido nas vendas do Comércio Livre; nulo nas da loja do mestre.
+    anuncio = models.ForeignKey(
+        "AnuncioComercioLivre", on_delete=models.SET_NULL, null=True, blank=True, related_name="transacoes"
+    )
+
+    nome_item = models.CharField(max_length=200)
+    preco_unitario = models.DecimalField(default=0, max_digits=20, decimal_places=2)
+    quantidade = models.PositiveIntegerField(default=1)
+    total = models.DecimalField(default=0, max_digits=20, decimal_places=2)
+
+    chave_idempotencia = models.CharField(max_length=64, null=True, blank=True, unique=True)
+
+    criado_em = models.DateTimeField(auto_now_add=True)
+
+    class Meta:
+        ordering = ["-criado_em", "-id"]
+        verbose_name = "Transação da loja"
+        verbose_name_plural = "Transações da loja"
+        indexes = [models.Index(fields=["campanha", "-criado_em"])]
+
+    def __str__(self):
+        return f"{self.nome_item} x{self.quantidade} ({self.total})"
+
+
+# ---------------------------------------------------------------------------
+# Comércio Livre — jogadores vendendo entre si
+# ---------------------------------------------------------------------------
+
+class AnuncioComercioLivre(models.Model):
+    """
+    Um item do inventário de um jogador posto à venda para os outros da
+    mesma mesa.
+
+    `item` é uma FK para `Personagem.Item` e isso já cobre os três tipos:
+    `Arma` e `Armadura` são subclasses por herança multi-tabela e
+    compartilham o mesmo pk, então uma FK só aponta para qualquer um deles —
+    não é preciso GenericForeignKey aqui (diferente de `ProdutoLoja`, cujas
+    seis origens não têm ancestral comum).
+
+    O anúncio é sempre o espelho de `Item.vendas`: um anúncio ativo por
+    item, garantido por constraint parcial, e os dois lados são mantidos
+    em sincronia por `Campanha.comercio`.
+    """
+
+    campanha = models.ForeignKey(Campanha, on_delete=models.CASCADE, related_name="anuncios")
+
+    vendedor_personagem = models.ForeignKey(
+        Personagem, on_delete=models.CASCADE, related_name="anuncios"
+    )
+
+    # SET_NULL, e não CASCADE: vender TODAS as unidades apaga a linha do
+    # inventário do vendedor, e com cascata o anúncio sumiria junto —
+    # levando embora o registro para o qual a transação recém-criada aponta
+    # (e o histórico de quem vendeu o quê). O anúncio encerrado sobrevive ao
+    # item; `item_dados` volta nulo e o card mostra só o que foi negociado.
+    item = models.ForeignKey(
+        Item, on_delete=models.SET_NULL, null=True, blank=True, related_name="anuncios"
+    )
+
+    quantidade = models.PositiveIntegerField(default=1)
+    preco = models.DecimalField(default=0, max_digits=20, decimal_places=2)
+    ativo = models.BooleanField(default=True)
+
+    criado_em = models.DateTimeField(auto_now_add=True)
+    atualizado_em = models.DateTimeField(auto_now=True)
+
+    class Meta:
+        ordering = ["-criado_em", "-id"]
+        verbose_name = "Anúncio do comércio livre"
+        verbose_name_plural = "Anúncios do comércio livre"
+        constraints = [
+            # Um item não pode estar à venda duas vezes ao mesmo tempo. A
+            # constraint é PARCIAL (só sobre os ativos) para que o histórico
+            # de anúncios encerrados do mesmo item continue possível.
+            models.UniqueConstraint(
+                fields=["item"],
+                condition=Q(ativo=True),
+                name="anuncio_ativo_unico_por_item",
+            )
+        ]
+        indexes = [models.Index(fields=["campanha", "ativo"])]
+
+    def __str__(self):
+        return f"{self.item.nome} x{self.quantidade} ({self.preco})"
