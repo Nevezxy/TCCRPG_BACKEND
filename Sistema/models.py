@@ -1,4 +1,19 @@
+"""
+As imagens destes models seguem o MESMO caminho de qualquer outra imagem do
+projeto (app Midia): o upload e o enquadramento entram pelo
+`CloudinaryUrlSerializerMixin` nos serializers, e a limpeza no Cloudinary é
+ligada automaticamente — `Midia.signals.conectar()` varre todos os models do
+projeto atrás de `CloudinaryField`, então nada precisou ser registrado lá.
+
+O NOME do campo é o mesmo do model equivalente da ficha (`foto` em
+Item/Arma/Armadura, `midia` em Poder/Habilidade) de propósito: é o que
+permite às views `copiar_*` levarem a imagem para a ficha sem um mapa de
+"campo de origem → campo de destino".
+"""
+
+from cloudinary.models import CloudinaryField
 from django.db import models
+
 
 class Sistema(models.Model):
     nome = models.CharField(max_length=100)
@@ -18,6 +33,7 @@ class Regra(models.Model):
     
 class ItemSistema(models.Model):
     sistema = models.ForeignKey(Sistema, on_delete=models.CASCADE, related_name='itens')
+    foto = CloudinaryField('Foto', blank=True, null=True)
     nome = models.CharField(max_length=100)
     descricao = models.TextField(blank=True)
     peso = models.DecimalField(default=0,max_digits=20, decimal_places=1)
@@ -29,6 +45,7 @@ class ItemSistema(models.Model):
 
 class ArmaSistema(models.Model):
     sistema = models.ForeignKey(Sistema, on_delete=models.CASCADE, related_name='armas')
+    foto = CloudinaryField('Foto', blank=True, null=True)
     nome = models.CharField(max_length=100)
     descricao = models.TextField(blank=True)
     peso = models.DecimalField(default=0,max_digits=20, decimal_places=1)
@@ -48,6 +65,7 @@ class ArmaSistema(models.Model):
     
 class ArmaduraSistema(models.Model):
     sistema = models.ForeignKey(Sistema, on_delete=models.CASCADE, related_name='armaduras')
+    foto = CloudinaryField('Foto', blank=True, null=True)
     nome = models.CharField(max_length=100)
     descricao = models.TextField(blank=True)
     peso = models.DecimalField(default=0,max_digits=20, decimal_places=1)
@@ -80,6 +98,7 @@ class GrupoArmas(models.Model):
     
 class PoderSistema(models.Model):
     sistema = models.ForeignKey(Sistema, on_delete=models.CASCADE, related_name='poderes')
+    midia = CloudinaryField('Mídia', blank=True, null=True)
     tag = models.CharField(max_length=100, blank=True)
     nome = models.CharField(max_length=100)
     descricao = models.TextField(blank=True)
@@ -90,6 +109,7 @@ class PoderSistema(models.Model):
     
 class HabilidadeSistema(models.Model):
     sistema = models.ForeignKey(Sistema, on_delete=models.CASCADE, related_name='habilidades')
+    midia = CloudinaryField('Mídia', blank=True, null=True)
     tag = models.CharField(max_length=100, blank=True)
     nome = models.CharField(max_length=100)
     descricao = models.TextField(blank=True)
