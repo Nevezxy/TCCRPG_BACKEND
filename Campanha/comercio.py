@@ -185,9 +185,23 @@ def comprar(anuncio_id, comprador, usuario, quantidade=1, chave=None):
     Devolve (transacao, item_do_comprador, anuncio).
     """
     with transaction.atomic():
+        # `of=("self",)` e SEM `select_related("item")`: as duas coisas são
+        # obrigatórias no PostgreSQL, não preferência de estilo.
+        #
+        # `item` é nulável (SET_NULL, para o anúncio sobreviver à venda da
+        # última unidade), e `select_related` de FK nulável gera LEFT OUTER
+        # JOIN — o Postgres então recusa a consulta inteira com
+        # "FOR UPDATE cannot be applied to the nullable side of an outer
+        # join". O SQLite ignora FOR UPDATE, então isso não aparece nos
+        # testes com SQLite; só em produção, em toda compra.
+        #
+        # E `of=("self",)` restringe o bloqueio à linha do anúncio: sem
+        # isso o Postgres travaria também as linhas de `campanha` e
+        # `vendedor_personagem` trazidas pelos JOINs, e cada compra
+        # serializaria contra todas as outras da mesma campanha.
         anuncio = (
-            AnuncioComercioLivre.objects.select_for_update()
-            .select_related("campanha", "vendedor_personagem", "item")
+            AnuncioComercioLivre.objects.select_for_update(of=("self",))
+            .select_related("campanha", "vendedor_personagem")
             .filter(pk=anuncio_id)
             .first()
         )
@@ -246,6 +260,10 @@ def comprar(anuncio_id, comprador, usuario, quantidade=1, chave=None):
             # se perde — a fila de exclusão do app Midia recheca o uso e vê a
             # cópia do comprador apontando para o mesmo arquivo.
             item.delete()
+            # O SET_NULL zera a coluna no banco, mas o objeto em memória
+            # continua com o `item_id` antigo — e quem serializar este
+            # anúncio depois tentaria carregar uma linha que já não existe.
+            anuncio.item = None
         else:
             item.quantidade = restante
             item.vendas = anuncio.ativo

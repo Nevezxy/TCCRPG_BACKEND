@@ -274,17 +274,54 @@ entrada.
 
 ## Testes
 
+Rodar a suíte não exige um banco de produção nem credenciais reais do
+Cloudinary: `app/settings_test.py` importa `app/settings.py` e troca só o
+que é do ambiente de teste.
+
 ```bash
-python manage.py test
+# Rápido, para desenvolver (SQLite em memória)
+python manage.py test --settings=app.settings_test
+
+# Como o CI roda (PostgreSQL de verdade)
+TEST_DATABASE_URL=postgres://postgres:postgres@localhost:5432/tccrpg_ci \
+    python manage.py test --settings=app.settings_test
 ```
 
-O app `Personagem` tem uma suíte de testes de regressão (`Personagem/tests.py`,
-11 casos) cobrindo especificamente as permissões de `Bonus` e
-`Aprimoramento` — os dois pontos onde a auditoria encontrou falhas de
-controle de acesso entre usuários (ver `docs/AUDIT.md`). Os demais apps
-(`Campanha`, `Sistema`, `Usuario`) ainda não têm testes implementados; ver
-`docs/AUDIT.md`, seção "Pendente para a próxima rodada", para os próximos
-casos recomendados.
+### Por que o CI usa PostgreSQL, e não SQLite
+
+**O SQLite ignora `SELECT ... FOR UPDATE`.** Toda a proteção contra
+condição de corrida das compras da Loja e do Comércio Livre
+(`Campanha/comercio.py`, `comprar_produto_loja` em `Campanha/views.py`)
+depende de bloqueio de linha — e no SQLite esses testes passam sem
+exercitar bloqueio nenhum.
+
+Isso não é hipotético: um `select_for_update()` combinado com
+`select_related` de uma FK nulável chegou a produção exatamente por essa
+lacuna. O PostgreSQL recusa a consulta
+(`FOR UPDATE cannot be applied to the nullable side of an outer join`) e o
+SQLite não reclamava. Por isso o CI roda no mesmo banco da produção.
+
+### Cobertura atual (218 casos)
+
+| App | Casos | O que cobre |
+|---|---|---|
+| `Campanha` | 177 | Pastas, conexões, entidades de mundo, busca, Canva, referências de imagem, múltiplas bibliotecas, equipamentos exclusivos, Loja (categorias, produtos, vitrine, rotação, compra), Comércio Livre |
+| `Midia` | 22 | Ciclo de vida das imagens: upload, troca, remoção, fila de exclusão e rechecagem de uso antes de apagar |
+| `Personagem` | 11 | Permissões de `Bonus` e `Aprimoramento` — os dois pontos de falha de controle de acesso apontados em `docs/AUDIT.md` |
+| `Sistema` | 8 | Imagens da biblioteca e cópia para a ficha, incluindo o arquivo compartilhado entre biblioteca e ficha |
+| `Usuario` | 0 | Sem testes próprios (as permissões são exercitadas indiretamente pelos demais apps) |
+
+### Integração contínua
+
+`.github/workflows/ci.yml` roda a cada push na `main` e a cada pull request
+para ela, com um serviço PostgreSQL 16:
+
+1. `manage.py check`
+2. `manage.py makemigrations --check --dry-run` — pega model alterado sem
+   migration; o deploy roda `migrate`, não `makemigrations`, então isso só
+   apareceria em produção como erro de coluna inexistente
+3. `manage.py migrate` — confirma que a cadeia de migrations aplica do zero
+4. `manage.py test`
 
 ## Deploy
 

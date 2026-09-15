@@ -135,6 +135,10 @@ def campanhas(request):
                 request.user
             )
 
+            # A Loja já nasce com as prateleiras usuais (Armas, Armaduras,
+            # Itens Gerais) — ver `loja.CATEGORIAS_PADRAO`.
+            loja.criar_categorias_padrao(campanha)
+
             return Response(
                 CampanhaSerializer(campanha).data,
                 status=status.HTTP_201_CREATED
@@ -3284,6 +3288,106 @@ def produto_loja_lista(request, pk):
     return Response(serializer.errors, status=status.HTTP_400_BAD_REQUEST)
 
 
+@extend_schema(
+    methods=["POST"],
+    operation_id="criar_produtos_loja_em_lote",
+    request={
+        "application/json": {
+            "type": "object",
+            "properties": {
+                "produtos": {
+                    "type": "array",
+                    "items": {
+                        "type": "object",
+                        "properties": {
+                            "origem_tipo": {"type": "string"},
+                            "origem_id": {"type": "integer"},
+                            "preco": {"type": "string"},
+                        },
+                        "required": ["origem_tipo", "origem_id"],
+                    },
+                },
+                "quantidade_disponivel": {"type": "integer", "nullable": True},
+                "categorias": {"type": "array", "items": {"type": "integer"}},
+            },
+            "required": ["produtos"],
+        }
+    },
+    responses=None,
+)
+@api_view(["POST"])
+@permission_classes([IsAuthenticated])
+def produto_loja_lote(request, pk):
+    """
+    Põe VÁRIOS equipamentos à venda de uma vez.
+
+    Existe para o mestre montar a loja de uma tacada: selecionar trinta
+    itens no catálogo e mandar um POST, em vez de trinta. `categorias` e
+    `quantidade_disponivel` valem para todos; `preco` é por item (o padrão
+    sugerido é o valor do próprio equipamento).
+
+    Cada item entra no seu próprio savepoint: um equipamento inválido — ou
+    já presente na loja — é REPORTADO e os outros são gravados. Abortar as
+    trinta inserções porque uma esbarrou na UniqueConstraint seria pior
+    para quem está montando a prateleira.
+    """
+    campanha, erro = _busca_campanha_do_participante(request, pk)
+
+    if erro:
+        return erro
+
+    erro = _exige_mestre(request, campanha)
+
+    if erro:
+        return erro
+
+    entradas = request.data.get("produtos")
+
+    if not isinstance(entradas, list) or not entradas:
+        return Response(
+            {"produtos": ["Informe a lista de equipamentos a adicionar."]},
+            status=status.HTTP_400_BAD_REQUEST,
+        )
+
+    comuns = {
+        "quantidade_disponivel": request.data.get("quantidade_disponivel"),
+        "categorias": request.data.get("categorias") or [],
+    }
+
+    criados, ignorados, erros = [], [], {}
+
+    for entrada in entradas:
+        if not isinstance(entrada, dict):
+            continue
+
+        chave = f"{entrada.get('origem_tipo')}:{entrada.get('origem_id')}"
+        dados = {**comuns, **entrada}
+
+        serializer = ProdutoLojaSerializer(
+            data=dados, context={"campanha": campanha, "request": request}
+        )
+
+        if not serializer.is_valid():
+            erros[chave] = serializer.errors
+            continue
+
+        try:
+            # Savepoint por item: o IntegrityError de um não desfaz os
+            # anteriores nem impede os seguintes.
+            with transaction.atomic():
+                produto = serializer.save(campanha=campanha)
+        except IntegrityError:
+            ignorados.append(chave)
+            continue
+
+        criados.append(ProdutoLojaSerializer(produto).data)
+
+    return Response(
+        {"criados": criados, "ignorados": ignorados, "erros": erros},
+        status=status.HTTP_201_CREATED if criados else status.HTTP_400_BAD_REQUEST,
+    )
+
+
 @extend_schema(methods=["GET"], operation_id="detalhar_produto_loja", responses=ProdutoLojaSerializer)
 @extend_schema(
     methods=["PUT"],
@@ -3510,8 +3614,12 @@ def comprar_produto_loja(request, produto_pk):
 
     try:
         with transaction.atomic():
+            # `of=("self",)`: sem ele o Postgres travaria também a linha de
+            # `django_content_type` trazida pelo JOIN — uma tabela
+            # compartilhada por todo o projeto, que viraria ponto de
+            # contenção de qualquer compra em qualquer campanha.
             produto = (
-                ProdutoLoja.objects.select_for_update()
+                ProdutoLoja.objects.select_for_update(of=("self",))
                 .select_related("content_type")
                 .get(pk=produto.pk)
             )

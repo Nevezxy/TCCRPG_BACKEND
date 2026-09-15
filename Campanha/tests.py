@@ -1325,6 +1325,50 @@ class LojaBaseTestCase(DuasCampanhasTestCase):
         )
 
 
+class CategoriasPadraoTests(DuasCampanhasTestCase):
+    """Campanha criada pela API já nasce com as prateleiras usuais."""
+
+    def test_campanha_nova_ja_vem_com_tres_categorias(self):
+        self.autentica_como(self.mestre_a)
+
+        response = self.client.post("/campanha/", {"nome": "Nova mesa"}, format="json")
+
+        self.assertEqual(response.status_code, status.HTTP_201_CREATED, response.data)
+        nova = Campanha.objects.get(pk=response.data["id"])
+        self.assertEqual(
+            [c.nome for c in nova.categorias_loja.all()],
+            ["Armas", "Armaduras", "Itens Gerais"],
+        )
+
+    def test_as_categorias_padrao_sao_editaveis_como_qualquer_outra(self):
+        self.autentica_como(self.mestre_a)
+        nova = Campanha.objects.get(
+            pk=self.client.post("/campanha/", {"nome": "Mesa"}, format="json").data["id"]
+        )
+        armas = nova.categorias_loja.get(nome="Armas")
+
+        renomear = self.client.patch(
+            f"/campanha/loja/categorias/{armas.id}/", {"nome": "Lâminas"}, format="json"
+        )
+        excluir = self.client.delete(
+            f"/campanha/loja/categorias/{nova.categorias_loja.get(nome='Armaduras').id}/"
+        )
+
+        self.assertEqual(renomear.status_code, status.HTTP_200_OK, renomear.data)
+        self.assertEqual(excluir.status_code, status.HTTP_204_NO_CONTENT)
+        self.assertEqual(nova.categorias_loja.count(), 2)
+
+    def test_criar_de_novo_nao_duplica_nem_estoura(self):
+        """A UniqueConstraint (campanha, nome) é respeitada por
+        `ignore_conflicts` — rodar duas vezes é inofensivo."""
+        from Campanha import loja as loja_mod
+
+        loja_mod.criar_categorias_padrao(self.campanha_a)
+        loja_mod.criar_categorias_padrao(self.campanha_a)
+
+        self.assertEqual(self.campanha_a.categorias_loja.count(), 3)
+
+
 class CategoriaLojaTests(LojaBaseTestCase):
 
     def test_mestre_cria_categoria(self):
@@ -1363,6 +1407,20 @@ class CategoriaLojaTests(LojaBaseTestCase):
         )
 
         self.assertEqual(response.status_code, status.HTTP_400_BAD_REQUEST)
+
+    def test_campos_de_texto_vazios_nao_quebram_a_criacao(self):
+        """Regressão: o formulário do frontend mandava `null` nos campos de
+        texto em branco, e `descricao`/`icone`/`cor` não aceitam NULL — toda
+        criação de categoria falhava com 400."""
+        self.autentica_como(self.mestre_a)
+
+        response = self.client.post(
+            f"/campanha/{self.campanha_a.id}/loja/categorias/",
+            {"nome": "Consumíveis", "descricao": "", "icone": "", "cor": ""},
+            format="json",
+        )
+
+        self.assertEqual(response.status_code, status.HTTP_201_CREATED, response.data)
 
     def test_rotacao_com_parametros_invalidos_e_recusada(self):
         self.autentica_como(self.mestre_a)
@@ -1478,6 +1536,98 @@ class ProdutoLojaTests(LojaBaseTestCase):
 
         self.assertEqual(listar.status_code, status.HTTP_403_FORBIDDEN)
         self.assertEqual(criar.status_code, status.HTTP_403_FORBIDDEN)
+
+    def test_lote_adiciona_varios_produtos_numa_requisicao(self):
+        categoria = CategoriaLoja.objects.create(campanha=self.campanha_a, nome="Geral")
+        self.autentica_como(self.mestre_a)
+
+        response = self.client.post(
+            f"/campanha/{self.campanha_a.id}/loja/produtos/lote/",
+            {
+                "produtos": [
+                    {"origem_tipo": "armasistema", "origem_id": self.arma_sistema.id, "preco": "150.00"},
+                    {"origem_tipo": "itemsistema", "origem_id": self.item_sistema.id, "preco": "5.00"},
+                    {"origem_tipo": "itemcampanha", "origem_id": self.item_exclusivo.id},
+                ],
+                "quantidade_disponivel": 4,
+                "categorias": [categoria.id],
+            },
+            format="json",
+        )
+
+        self.assertEqual(response.status_code, status.HTTP_201_CREATED, response.data)
+        self.assertEqual(len(response.data["criados"]), 3)
+        self.assertEqual(ProdutoLoja.objects.count(), 3)
+        # `categorias` e `quantidade_disponivel` valem para todos.
+        for produto in ProdutoLoja.objects.all():
+            self.assertEqual(produto.quantidade_disponivel, 4)
+            self.assertEqual(list(produto.categorias.values_list("id", flat=True)), [categoria.id])
+        # O preço é por item.
+        arma = ProdutoLoja.objects.get(object_id=self.arma_sistema.id, content_type__model="armasistema")
+        self.assertEqual(str(arma.preco), "150.00")
+
+    def test_lote_ignora_o_que_ja_esta_na_loja_e_grava_o_resto(self):
+        """Um item repetido não pode derrubar a inclusão dos outros."""
+        self.cria_produto(self.arma_sistema)
+        self.autentica_como(self.mestre_a)
+
+        response = self.client.post(
+            f"/campanha/{self.campanha_a.id}/loja/produtos/lote/",
+            {
+                "produtos": [
+                    {"origem_tipo": "armasistema", "origem_id": self.arma_sistema.id},
+                    {"origem_tipo": "itemsistema", "origem_id": self.item_sistema.id},
+                ]
+            },
+            format="json",
+        )
+
+        self.assertEqual(response.status_code, status.HTTP_201_CREATED, response.data)
+        self.assertEqual(len(response.data["criados"]), 1)
+        self.assertEqual(response.data["ignorados"], [f"armasistema:{self.arma_sistema.id}"])
+        self.assertEqual(ProdutoLoja.objects.count(), 2)
+
+    def test_lote_reporta_o_invalido_e_grava_os_validos(self):
+        self.autentica_como(self.mestre_a)
+
+        response = self.client.post(
+            f"/campanha/{self.campanha_a.id}/loja/produtos/lote/",
+            {
+                "produtos": [
+                    {"origem_tipo": "itemsistema", "origem_id": self.item_sistema.id},
+                    # De um sistema que esta campanha não usa.
+                    {"origem_tipo": "itemsistema", "origem_id": self.item_alheio.id},
+                    {"origem_tipo": "npc", "origem_id": self.npc_a1.id},
+                ]
+            },
+            format="json",
+        )
+
+        self.assertEqual(response.status_code, status.HTTP_201_CREATED, response.data)
+        self.assertEqual(len(response.data["criados"]), 1)
+        self.assertEqual(len(response.data["erros"]), 2)
+        self.assertEqual(ProdutoLoja.objects.count(), 1)
+
+    def test_lote_vazio_e_recusado(self):
+        self.autentica_como(self.mestre_a)
+
+        response = self.client.post(
+            f"/campanha/{self.campanha_a.id}/loja/produtos/lote/", {"produtos": []}, format="json"
+        )
+
+        self.assertEqual(response.status_code, status.HTTP_400_BAD_REQUEST)
+
+    def test_jogador_nao_usa_o_lote(self):
+        self.autentica_como(self.jogador_a)
+
+        response = self.client.post(
+            f"/campanha/{self.campanha_a.id}/loja/produtos/lote/",
+            {"produtos": [{"origem_tipo": "itemsistema", "origem_id": self.item_sistema.id}]},
+            format="json",
+        )
+
+        self.assertEqual(response.status_code, status.HTTP_403_FORBIDDEN)
+        self.assertFalse(ProdutoLoja.objects.exists())
 
     def test_disponiveis_lista_as_seis_origens_no_escopo(self):
         self.cria_produto(self.arma_sistema)
