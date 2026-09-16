@@ -5,7 +5,7 @@ from django.db import models
 from django.core.exceptions import ValidationError
 from django.utils import timezone
 
-from Personagem.models import Item, Personagem
+from Personagem.models import Item, Personagem, Versionado
 from Sistema.models import Sistema
 from app import settings
 from cloudinary.models import CloudinaryField
@@ -1286,3 +1286,109 @@ class AnuncioComercioLivre(models.Model):
 
     def __str__(self):
         return f"{self.item.nome} x{self.quantidade} ({self.preco})"
+
+
+# ---------------------------------------------------------------------------
+# Combate (Escudo do Mestre) — ordem de iniciativa, PV de combate e turno.
+# Ver `Campanha/combate.py` para as operações e os eventos em tempo real.
+# ---------------------------------------------------------------------------
+
+class Combate(Versionado):
+    """
+    O combate da campanha — UM por campanha, criado sob demanda. Não existe
+    "encerrar e criar outro": o mestre esvazia a lista e reinicia a rodada.
+    Guardar só o combate corrente é o que a mesa usa; histórico de combates
+    seria um requisito novo, não um efeito colateral deste modelo.
+
+    `Versionado` porque rodada/turno/visibilidade também chegam por evento:
+    dois "próximo turno" publicados fora de ordem não podem fazer a tela
+    voltar um turno.
+    """
+
+    campanha = models.OneToOneField(Campanha, on_delete=models.CASCADE, related_name="combate")
+    rodada = models.PositiveIntegerField(default=1)
+    # SET_NULL: o participante que está agindo pode sumir numa cascata (o
+    # NPC foi excluído em outra aba). As remoções feitas pelo próprio
+    # combate já passam a vez adiante antes de apagar (ver `combate.remover`).
+    turno_participante = models.ForeignKey(
+        "ParticipanteCombate", on_delete=models.SET_NULL, null=True, blank=True, related_name="+"
+    )
+    # Desligado por padrão: PV de inimigo e ordem de ação são informação do
+    # mestre até ele decidir mostrar.
+    visivel_para_jogadores = models.BooleanField(default=False)
+
+    criado_em = models.DateTimeField(auto_now_add=True)
+    atualizado_em = models.DateTimeField(auto_now=True)
+
+    class Meta:
+        verbose_name = "Combate"
+        verbose_name_plural = "Combates"
+
+    def __str__(self):
+        return f"Combate de {self.campanha} (rodada {self.rodada})"
+
+
+class ParticipanteCombate(Versionado):
+    """
+    Uma entrada na lista de iniciativa. A mesma entidade pode aparecer várias
+    vezes (três goblins a partir de uma única Criatura), e cada entrada tem o
+    PRÓPRIO PV — por isso o PV de combate mora aqui, e não na `ficha` do
+    NPC/Criatura (que, além disso, guarda o PV como texto livre: "45 / 45").
+
+    Três FKs reais em vez de GenericForeignKey: a lista resolve nome e foto
+    com `select_related` (sem N+1), e excluir a entidade apaga a entrada no
+    próprio banco — nunca sobra participante apontando para nada.
+
+    Desempate da iniciativa pelo `id`: ids só crescem, então empatados ficam
+    na ordem em que entraram no combate, igual em qualquer cliente.
+    """
+
+    TIPO_CHOICES = [
+        ("personagem", "Personagem"),
+        ("npc", "NPC"),
+        ("criatura", "Criatura"),
+    ]
+
+    combate = models.ForeignKey(Combate, on_delete=models.CASCADE, related_name="participantes")
+    tipo = models.CharField(max_length=20, choices=TIPO_CHOICES)
+    personagem = models.ForeignKey(
+        Personagem, on_delete=models.CASCADE, null=True, blank=True, related_name="participacoes_combate"
+    )
+    npc = models.ForeignKey(NPC, on_delete=models.CASCADE, null=True, blank=True, related_name="participacoes_combate")
+    criatura = models.ForeignKey(
+        Criatura, on_delete=models.CASCADE, null=True, blank=True, related_name="participacoes_combate"
+    )
+
+    iniciativa = models.IntegerField(default=0)
+    # Nulos para personagens: o PV deles é o Status da ficha, que o Escudo já
+    # sincroniza — duplicar aqui criaria duas "vidas" divergentes.
+    pv_atual = models.PositiveIntegerField(null=True, blank=True)
+    pv_max = models.PositiveIntegerField(null=True, blank=True)
+
+    criado_em = models.DateTimeField(auto_now_add=True)
+
+    class Meta:
+        ordering = ["-iniciativa", "id"]
+        verbose_name = "Participante de combate"
+        verbose_name_plural = "Participantes de combate"
+        constraints = [
+            # Exatamente a FK correspondente ao `tipo` preenchida — o banco
+            # garante o que o serializer valida.
+            models.CheckConstraint(
+                condition=(
+                    Q(tipo="personagem", personagem__isnull=False, npc__isnull=True, criatura__isnull=True)
+                    | Q(tipo="npc", personagem__isnull=True, npc__isnull=False, criatura__isnull=True)
+                    | Q(tipo="criatura", personagem__isnull=True, npc__isnull=True, criatura__isnull=False)
+                ),
+                name="participante_combate_uma_entidade",
+            )
+        ]
+        indexes = [models.Index(fields=["combate", "-iniciativa", "id"])]
+
+    @property
+    def entidade(self):
+        return self.personagem or self.npc or self.criatura
+
+    def __str__(self):
+        entidade = self.entidade
+        return f"{entidade} ({self.iniciativa})" if entidade else f"Participante {self.pk}"

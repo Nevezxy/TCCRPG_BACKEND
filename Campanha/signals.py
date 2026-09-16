@@ -27,15 +27,17 @@ dispararia uma consulta só para montar a assinatura.
 from functools import lru_cache, partial
 
 from django.db import transaction
+from django.db.models import Q
 from django.db.models.signals import m2m_changed, post_delete, post_init, post_save, pre_delete
 
 from Midia.services import public_id_de
 from Personagem.models import Atributo, Bonus, Defesa, Personagem, Status
 
-from . import escudo
-from .models import Campanha
+from . import combate, escudo
+from .models import NPC, Campanha, Combate, Criatura, ParticipanteCombate
 
 _ENTIDADE = {Status: "status", Atributo: "atributo", Defesa: "defesa"}
+_CAMPO_COMBATE = {Personagem: "personagem", NPC: "npc", Criatura: "criatura"}
 
 # Campos que aparecem no Escudo. Para Status/Atributo/Defesa é a linha toda
 # (menos a própria versão); para o Personagem, só o que o card mostra.
@@ -230,6 +232,23 @@ def _personagens_da_campanha_mudaram(sender, instance, action, reverse, pk_set, 
     funcao = _publicar_entradas if action == "post_add" else _publicar_saidas
     for campanha_id, personagem_ids in _pares(instance, reverse, pk_set):
         _ao_commit(funcao, campanha_id, personagem_ids)
+        if action == "post_remove":
+            # Quem sai da mesa sai do combate dela — na MESMA transação (não
+            # em on_commit), para a lista nunca apontar um personagem de fora.
+            _remover_do_combate(campanha_id, personagem_ids)
+
+
+def _remover_do_combate(campanha_id, personagem_ids):
+    filtro = Q(tipo="personagem", personagem_id__in=personagem_ids)
+    combate_id = Combate.objects.filter(campanha_id=campanha_id).values_list("id", flat=True).first()
+    if combate_id is not None and ParticipanteCombate.objects.filter(filtro, combate_id=combate_id).exists():
+        combate.remover(combate_id, filtro)
+
+
+def _entidade_de_combate_sera_excluida(sender, instance, **kwargs):
+    # Antes da cascata: tira as entradas pelo fluxo normal (passa a vez,
+    # publica a remoção) em vez de deixá-las sumirem em silêncio.
+    combate.remover_da_entidade(_CAMPO_COMBATE[sender], instance.pk)
 
 
 def _jogadores_da_campanha_mudaram(sender, instance, action, reverse, pk_set, **kwargs):
@@ -269,6 +288,11 @@ def conectar():
     post_save.connect(_personagem_salvo, sender=Personagem, dispatch_uid="escudo-save-personagem")
     pre_delete.connect(_personagem_sera_excluido, sender=Personagem, dispatch_uid="escudo-predelete-personagem")
     pre_delete.connect(_campanha_sera_excluida, sender=Campanha, dispatch_uid="escudo-predelete-campanha")
+
+    for model, campo in _CAMPO_COMBATE.items():
+        pre_delete.connect(
+            _entidade_de_combate_sera_excluida, sender=model, dispatch_uid=f"combate-predelete-{campo}"
+        )
 
     m2m_changed.connect(
         _personagens_da_campanha_mudaram,

@@ -239,12 +239,13 @@ class AutorizacaoTests(EscudoBase):
         return consumers._autorizar.func(usuario_id, self.campanha.pk)
 
     def test_participantes_passam(self):
-        self.assertIsNone(self.autorizar(self.mestre.pk))
-        self.assertIsNone(self.autorizar(self.jogador.pk))
+        # (código, gerencia, combate visível): só o mestre gerencia.
+        self.assertEqual(self.autorizar(self.mestre.pk), (None, True, False))
+        self.assertEqual(self.autorizar(self.jogador.pk), (None, False, False))
 
     def test_estranho_e_campanha_inexistente(self):
-        self.assertEqual(self.autorizar(self.estranho.pk), consumers.FECHA_PROIBIDO)
-        self.assertEqual(consumers._autorizar.func(self.mestre.pk, 999999), consumers.FECHA_NAO_ENCONTRADO)
+        self.assertEqual(self.autorizar(self.estranho.pk)[0], consumers.FECHA_PROIBIDO)
+        self.assertEqual(consumers._autorizar.func(self.mestre.pk, 999999)[0], consumers.FECHA_NAO_ENCONTRADO)
 
 
 @override_settings(CHANNEL_LAYERS=CAMADA_MEMORIA)
@@ -268,9 +269,9 @@ class ConsumerTests(SimpleTestCase):
         return WebsocketCommunicator(URLRouter(websocket_urlpatterns), f"/ws/campanha/{campanha_id}/escudo/")
 
     @staticmethod
-    def autorizacao(resultado):
+    def autorizacao(resultado, gerencia=False, visivel=False):
         async def falso(_user_id, _campanha_id):
-            return resultado
+            return resultado, gerencia, visivel
 
         return mock.patch.object(consumers, "_autorizar", falso)
 

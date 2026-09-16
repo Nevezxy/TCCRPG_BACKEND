@@ -23,6 +23,8 @@ from .models import (
     ItemCampanha,
     ArmaCampanha,
     ArmaduraCampanha,
+    Combate,
+    ParticipanteCombate,
 )
 
 
@@ -301,3 +303,26 @@ class ArmaCampanhaAdmin(EntidadeMundoAdmin):
 class ArmaduraCampanhaAdmin(EntidadeMundoAdmin):
     list_display = EntidadeMundoAdmin.list_display + ("defesa", "peso", "valor")
     list_filter = EntidadeMundoAdmin.list_filter + ("qualidade",)
+
+
+# ---------------------------------------------------------------------------
+# Combate do Escudo do Mestre — só para inspeção/suporte. Editar por aqui não
+# publica evento (ver `combate.py`): os clientes abertos só veem a mudança na
+# próxima reconexão.
+# ---------------------------------------------------------------------------
+
+class ParticipanteCombateInline(admin.TabularInline):
+    model = ParticipanteCombate
+    fk_name = "combate"
+    extra = 0
+    fields = ("tipo", "personagem", "npc", "criatura", "iniciativa", "pv_atual", "pv_max", "versao")
+    readonly_fields = ("versao",)
+    raw_id_fields = ("personagem", "npc", "criatura")
+
+
+@admin.register(Combate)
+class CombateAdmin(admin.ModelAdmin):
+    list_display = ("campanha", "rodada", "visivel_para_jogadores", "atualizado_em")
+    raw_id_fields = ("campanha", "turno_participante")
+    readonly_fields = ("versao",)
+    inlines = [ParticipanteCombateInline]

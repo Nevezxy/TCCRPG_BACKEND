@@ -595,6 +595,25 @@ urlpatterns = [
         name="escudo_campanha"
     ),
 
+    # Combate do Escudo (iniciativa, PV de combate, turno). As mudanças
+    # também chegam pelo WebSocket do Escudo — ver Campanha/combate.py.
+    path("<int:pk>/combate/", views.combate_campanha, name="combate_campanha"),
+    path("<int:pk>/combate/candidatos/", views.combate_candidatos, name="combate_candidatos"),
+    path("<int:pk>/combate/participantes/", views.combate_adicionar, name="combate_adicionar"),
+    path("<int:pk>/combate/participantes/remover/", views.combate_remover, name="combate_remover"),
+    path(
+        "<int:pk>/combate/participantes/<int:participante_pk>/",
+        views.combate_participante,
+        name="combate_participante",
+    ),
+    path(
+        "<int:pk>/combate/participantes/<int:participante_pk>/dano/",
+        views.combate_dano,
+        name="combate_dano",
+    ),
+    path("<int:pk>/combate/turno/", views.combate_turno, name="combate_turno"),
+    path("<int:pk>/combate/reiniciar/", views.combate_reiniciar, name="combate_reiniciar"),
+
 
     # "Fazer uma cópia" de uma entidade de mundo (body: { tipo, id }).
     path(

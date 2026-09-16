@@ -31,8 +31,10 @@ from rest_framework_simplejwt.exceptions import TokenError
 from rest_framework_simplejwt.settings import api_settings as jwt_settings
 from rest_framework_simplejwt.tokens import AccessToken
 
-from . import escudo
-from .models import Campanha
+from Usuario.permissions import pode_gerenciar_campanha
+
+from . import combate, escudo
+from .models import Campanha, Combate
 
 PRAZO_AUTENTICACAO = 10  # segundos
 
@@ -44,18 +46,20 @@ FECHA_NAO_ENCONTRADO = 4404
 @database_sync_to_async
 def _autorizar(user_id, campanha_id):
     """Mesma regra de `_busca_campanha_do_participante` (views.py): mestre,
-    jogador ou superuser. Devolve o código de fechamento ou None se ok."""
+    jogador ou superuser. Devolve `(código de fechamento ou None, gerencia,
+    combate visível)` — os dois últimos decidem o que este usuário recebe
+    dos eventos de combate (ver `combate.filtrar_evento`)."""
     usuario = get_user_model().objects.filter(pk=user_id, is_active=True).first()
     if usuario is None:
-        return FECHA_NAO_AUTENTICADO
+        return FECHA_NAO_AUTENTICADO, False, False
     campanha = Campanha.objects.filter(pk=campanha_id).only("id", "mestre_id").first()
     if campanha is None:
-        return FECHA_NAO_ENCONTRADO
-    if usuario.is_superuser or campanha.mestre_id == usuario.pk:
-        return None
-    if campanha.jogadores.filter(pk=usuario.pk).exists():
-        return None
-    return FECHA_PROIBIDO
+        return FECHA_NAO_ENCONTRADO, False, False
+    gerencia = pode_gerenciar_campanha(campanha, usuario)
+    if not gerencia and not campanha.jogadores.filter(pk=usuario.pk).exists():
+        return FECHA_PROIBIDO, False, False
+    visivel = Combate.objects.filter(campanha_id=campanha_id, visivel_para_jogadores=True).exists()
+    return None, gerencia, visivel
 
 
 class EscudoConsumer(AsyncJsonWebsocketConsumer):
@@ -65,6 +69,8 @@ class EscudoConsumer(AsyncJsonWebsocketConsumer):
         self.grupo = escudo.nome_grupo(self.campanha_id)
         self.user_id = None
         self.inscrito = False
+        self.gerencia = False
+        self.combate_visivel = False
         await self.accept()
         self._prazo = asyncio.get_running_loop().call_later(PRAZO_AUTENTICACAO, self._expirou_prazo)
 
@@ -118,11 +124,14 @@ class EscudoConsumer(AsyncJsonWebsocketConsumer):
             await self.close(code=FECHA_NAO_AUTENTICADO)
             return
 
-        erro = await _autorizar(user_id, self.campanha_id)
+        erro, self.gerencia, self.combate_visivel = await _autorizar(user_id, self.campanha_id)
         if erro is not None:
             await self.close(code=erro)
             return
 
+        # `gerencia` fica fixo pela conexão: promover/rebaixar um moderador
+        # vale a partir da próxima conexão (o GET do combate, esse sim, é
+        # checado a cada requisição).
         self.user_id = int(user_id)
         self._prazo.cancel()
         # Inscreve ANTES de responder `pronto`: o cliente só pede o snapshot
@@ -143,4 +152,8 @@ class EscudoConsumer(AsyncJsonWebsocketConsumer):
         if tipo == "campanha_removida":
             await self.close(code=FECHA_NAO_ENCONTRADO)
             return
+        if isinstance(tipo, str) and tipo.startswith("combate"):
+            evento, self.combate_visivel = combate.filtrar_evento(evento, self.gerencia, self.combate_visivel)
+            if evento is None:
+                return
         await self.send_json(evento)

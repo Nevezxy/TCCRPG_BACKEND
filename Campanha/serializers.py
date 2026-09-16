@@ -38,6 +38,7 @@ from .models import (
 from Personagem.models import Personagem
 from Personagem.serializers import CloudinaryUrlSerializerMixin  # ajuste o import conforme seu projeto
 from Midia.serializers import ajustes_do_objeto
+from . import combate as _combate
 from Sistema.serializers import SincronizaSistemasMixin
 
 
@@ -1302,3 +1303,117 @@ class AnuncioComercioLivreSerializer(serializers.ModelSerializer):
         if preco < 0:
             raise serializers.ValidationError("O preço não pode ser negativo.")
         return preco
+
+
+# ---------------------------------------------------------------------------
+# Combate (Escudo do Mestre) — ver `Campanha/combate.py`.
+#
+# Os dados de saída são montados em `combate.py` (formatos compartilhados
+# com os eventos do WebSocket); os serializers de SAÍDA abaixo existem para
+# documentar o contrato no schema, e os de ENTRADA para validar.
+# ---------------------------------------------------------------------------
+
+
+
+class CombateDadosSerializer(serializers.Serializer):
+    id = serializers.IntegerField()
+    versao = serializers.IntegerField()
+    rodada = serializers.IntegerField()
+    turno_participante = serializers.IntegerField(allow_null=True)
+    visivel_para_jogadores = serializers.BooleanField()
+
+
+class ParticipanteValoresSerializer(serializers.Serializer):
+    id = serializers.IntegerField()
+    versao = serializers.IntegerField()
+    iniciativa = serializers.IntegerField()
+    pv_atual = serializers.IntegerField(allow_null=True, help_text="Ausente para jogadores (ver pv_percentual).")
+    pv_max = serializers.IntegerField(allow_null=True, help_text="Ausente para jogadores (ver pv_percentual).")
+    pv_percentual = serializers.IntegerField(
+        allow_null=True, required=False, help_text="Só na visão do jogador: 0–100, sem os números de PV."
+    )
+
+
+class ParticipanteCombateDadosSerializer(ParticipanteValoresSerializer):
+    tipo = serializers.ChoiceField(choices=["personagem", "npc", "criatura"])
+    entidade_id = serializers.IntegerField()
+    nome = serializers.CharField()
+    foto = serializers.CharField(allow_null=True)
+    foto_ajuste = serializers.JSONField(allow_null=True)
+
+
+class CombateEstadoSerializer(serializers.Serializer):
+    combate = CombateDadosSerializer()
+    participantes = ParticipanteCombateDadosSerializer(many=True)
+    pode_gerenciar = serializers.BooleanField()
+
+
+class CandidatoCombateSerializer(serializers.Serializer):
+    tipo = serializers.ChoiceField(choices=["personagem", "npc", "criatura"])
+    entidade_id = serializers.IntegerField()
+    nome = serializers.CharField()
+    foto = serializers.CharField(allow_null=True)
+    foto_ajuste = serializers.JSONField(allow_null=True)
+    pv_max = serializers.IntegerField(allow_null=True, help_text="Lido da ficha; nulo se não reconhecido.")
+
+
+class EntidadeCombateEntradaSerializer(serializers.Serializer):
+    tipo = serializers.ChoiceField(choices=["personagem", "npc", "criatura"])
+    id = serializers.IntegerField(min_value=1)
+    quantidade = serializers.IntegerField(min_value=1, max_value=_combate.LIMITE_QUANTIDADE, default=1)
+
+
+class AdicionarParticipantesSerializer(serializers.Serializer):
+    entidades = EntidadeCombateEntradaSerializer(many=True, required=False)
+    todos_personagens = serializers.BooleanField(default=False)
+
+    def validate(self, attrs):
+        entidades = attrs.get("entidades") or []
+        if bool(entidades) == attrs["todos_personagens"]:
+            raise serializers.ValidationError("Informe `entidades` ou `todos_personagens`, e só um deles.")
+        if len(entidades) > _combate.LIMITE_PARTICIPANTES:
+            raise serializers.ValidationError("Entidades demais numa única requisição.")
+        return attrs
+
+
+class RemoverParticipantesSerializer(serializers.Serializer):
+    ids = serializers.ListField(
+        child=serializers.IntegerField(min_value=1), required=False, allow_empty=False,
+        max_length=_combate.LIMITE_PARTICIPANTES,
+    )
+    escopo = serializers.ChoiceField(choices=["personagens", "todos"], required=False)
+
+    def validate(self, attrs):
+        if ("ids" in attrs) == ("escopo" in attrs):
+            raise serializers.ValidationError("Informe `ids` ou `escopo`, e só um deles.")
+        return attrs
+
+
+class RemoverParticipantesRespostaSerializer(serializers.Serializer):
+    removidos = serializers.ListField(child=serializers.IntegerField())
+    combate = CombateDadosSerializer(allow_null=True)
+
+
+class AtualizarParticipanteSerializer(serializers.Serializer):
+    iniciativa = serializers.IntegerField(
+        min_value=-_combate.LIMITE_INICIATIVA, max_value=_combate.LIMITE_INICIATIVA, required=False
+    )
+    pv_atual = serializers.IntegerField(min_value=0, max_value=_combate.LIMITE_PV, required=False)
+    pv_max = serializers.IntegerField(min_value=0, max_value=_combate.LIMITE_PV, required=False, allow_null=True)
+
+    def validate(self, attrs):
+        if not attrs:
+            raise serializers.ValidationError("Nada para atualizar.")
+        return attrs
+
+
+class DanoSerializer(serializers.Serializer):
+    valor = serializers.IntegerField(min_value=1, max_value=_combate.LIMITE_PV)
+
+
+class TurnoSerializer(serializers.Serializer):
+    acao = serializers.ChoiceField(choices=["proximo", "anterior"])
+
+
+class AtualizarCombateSerializer(serializers.Serializer):
+    visivel_para_jogadores = serializers.BooleanField()

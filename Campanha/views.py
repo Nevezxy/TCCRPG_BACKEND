@@ -44,6 +44,7 @@ from .models import (
     ProdutoLoja,
     TransacaoLoja,
     AnuncioComercioLivre,
+    ParticipanteCombate,
     modelos_vendaveis,
 )
 from Usuario.permissions import (
@@ -53,8 +54,20 @@ from Usuario.permissions import (
     usuario_pode_ver_objeto,
 )
 from .escudo import montar_snapshot
-from . import comercio, loja
+from . import combate, comercio, loja
 from .serializers import (
+    AdicionarParticipantesSerializer,
+    AtualizarCombateSerializer,
+    AtualizarParticipanteSerializer,
+    CandidatoCombateSerializer,
+    CombateDadosSerializer,
+    CombateEstadoSerializer,
+    DanoSerializer,
+    ParticipanteCombateDadosSerializer,
+    ParticipanteValoresSerializer,
+    RemoverParticipantesRespostaSerializer,
+    RemoverParticipantesSerializer,
+    TurnoSerializer,
     CampanhaSerializer,
     NPCSerializer,
     FichaPresetSerializer,
@@ -4022,3 +4035,256 @@ def comprar_anuncio(request, anuncio_pk):
         },
         status=status.HTTP_201_CREATED,
     )
+
+
+# ---------------------------------------------------------------------------
+# Combate do Escudo do Mestre: iniciativa, PV de combate e turno. Regras e
+# formatos em `combate.py`; aqui só acesso, validação e códigos HTTP.
+#
+# Leitura: mestre/moderador sempre; jogador só com `visivel_para_jogadores`
+# (e sem os números de PV). Escrita: só mestre/moderador.
+# ---------------------------------------------------------------------------
+
+def _combate_do_gestor(request, pk, criar=True):
+    """(campanha, combate, None) para mestre/moderador, ou (None, None, erro)."""
+    campanha, erro = _busca_campanha_do_participante(request, pk)
+    if erro:
+        return None, None, erro
+    if not pode_gerenciar_campanha(campanha, request.user):
+        return None, None, Response(
+            {"erro": "Apenas o mestre da campanha pode controlar o combate."},
+            status=status.HTTP_403_FORBIDDEN,
+        )
+    return campanha, combate.obter(campanha, criar=criar), None
+
+
+def _participante_do_gestor(request, pk, participante_pk):
+    _, _, erro = _combate_do_gestor(request, pk, criar=False)
+    if erro:
+        return None, erro
+    participante = (
+        ParticipanteCombate.objects.select_related("combate")
+        .only("id", "pv_atual", "combate__id", "combate__campanha_id")
+        .filter(pk=participante_pk, combate__campanha_id=pk)
+        .first()
+    )
+    if participante is None:
+        return None, Response({"erro": "Participante não encontrado."}, status=status.HTTP_404_NOT_FOUND)
+    return participante, None
+
+
+def _erro_de_combate(exc):
+    return Response({"erro": str(exc)}, status=status.HTTP_400_BAD_REQUEST)
+
+
+@extend_schema(methods=["GET"], operation_id="estado_combate", responses=CombateEstadoSerializer)
+@extend_schema(
+    methods=["PATCH"],
+    operation_id="atualizar_combate",
+    request=AtualizarCombateSerializer,
+    responses=CombateDadosSerializer,
+)
+@api_view(["GET", "PATCH"])
+@permission_classes([IsAuthenticated])
+def combate_campanha(request, pk):
+    """
+    GET: estado completo do combate (carga inicial e reconexão — as mudanças
+    seguintes chegam pelo WebSocket do Escudo). O combate é criado na
+    primeira leitura do mestre; para o jogador, combate inexistente ou
+    oculto é 403, e o painel simplesmente não aparece.
+
+    PATCH: liga/desliga a visibilidade para os jogadores.
+    """
+    campanha, erro = _busca_campanha_do_participante(request, pk)
+    if erro:
+        return erro
+
+    gerencia = pode_gerenciar_campanha(campanha, request.user)
+
+    if request.method == "GET":
+        atual = combate.obter(campanha, criar=gerencia)
+        if atual is None or not (gerencia or atual.visivel_para_jogadores):
+            return Response(
+                {"erro": "O mestre não compartilhou o combate com os jogadores."},
+                status=status.HTTP_403_FORBIDDEN,
+            )
+        return Response(combate.montar_estado(atual, gerencia))
+
+    if not gerencia:
+        return Response(
+            {"erro": "Apenas o mestre da campanha pode controlar o combate."},
+            status=status.HTTP_403_FORBIDDEN,
+        )
+    entrada = AtualizarCombateSerializer(data=request.data)
+    if not entrada.is_valid():
+        return Response(entrada.errors, status=status.HTTP_400_BAD_REQUEST)
+    atual = combate.obter(campanha, criar=True)
+    return Response(combate.definir_visibilidade(atual, entrada.validated_data["visivel_para_jogadores"]))
+
+
+@extend_schema(methods=["GET"], operation_id="candidatos_combate", responses=CandidatoCombateSerializer(many=True))
+@api_view(["GET"])
+@permission_classes([IsAuthenticated])
+def combate_candidatos(request, pk):
+    """Personagens, NPCs e Criaturas da campanha numa forma enxuta (com o PV
+    máximo já lido da ficha) — o modal "Adicionar" faz uma requisição só,
+    em vez de três listagens completas com fichas inteiras."""
+    campanha, _, erro = _combate_do_gestor(request, pk, criar=False)
+    if erro:
+        return erro
+    return Response(combate.candidatos(campanha))
+
+
+@extend_schema(
+    methods=["POST"],
+    operation_id="adicionar_participantes_combate",
+    request=AdicionarParticipantesSerializer,
+    responses={201: ParticipanteCombateDadosSerializer(many=True)},
+)
+@api_view(["POST"])
+@permission_classes([IsAuthenticated])
+def combate_adicionar(request, pk):
+    """
+    `{"entidades": [{"tipo", "id", "quantidade"}]}` adiciona (repetições
+    permitidas: três goblins da mesma Criatura, cada um com seu PV), ou
+    `{"todos_personagens": true}` adiciona só os personagens que ainda não
+    estão no combate. Responde as linhas criadas, já na forma completa.
+    """
+    campanha, atual, erro = _combate_do_gestor(request, pk)
+    if erro:
+        return erro
+    entrada = AdicionarParticipantesSerializer(data=request.data)
+    if not entrada.is_valid():
+        return Response(entrada.errors, status=status.HTTP_400_BAD_REQUEST)
+    dados = entrada.validated_data
+    try:
+        if dados["todos_personagens"]:
+            linhas = combate.adicionar(atual, todos_personagens=True)
+        else:
+            entidades = combate.resolver_entidades(
+                campanha, [(e["tipo"], e["id"], e["quantidade"]) for e in dados["entidades"]]
+            )
+            linhas = combate.adicionar(atual, entidades=entidades)
+    except combate.ErroCombate as exc:
+        return _erro_de_combate(exc)
+    return Response(linhas, status=status.HTTP_201_CREATED)
+
+
+@extend_schema(
+    methods=["POST"],
+    operation_id="remover_participantes_combate",
+    request=RemoverParticipantesSerializer,
+    responses=RemoverParticipantesRespostaSerializer,
+)
+@api_view(["POST"])
+@permission_classes([IsAuthenticated])
+def combate_remover(request, pk):
+    """
+    `{"ids": [...]}` remove as entradas escolhidas; `{"escopo": "personagens"}`
+    só os personagens; `{"escopo": "todos"}` esvazia o combate. POST (e não
+    DELETE com corpo) porque vários proxies descartam corpo de DELETE.
+    `combate` volta preenchido quando a remoção mudou o turno/rodada.
+    """
+    _, atual, erro = _combate_do_gestor(request, pk)
+    if erro:
+        return erro
+    entrada = RemoverParticipantesSerializer(data=request.data)
+    if not entrada.is_valid():
+        return Response(entrada.errors, status=status.HTTP_400_BAD_REQUEST)
+    dados = entrada.validated_data
+    if "ids" in dados:
+        filtro = Q(pk__in=dados["ids"])
+    elif dados["escopo"] == "personagens":
+        filtro = Q(tipo="personagem")
+    else:
+        filtro = Q()
+    removidos, dados_combate = combate.remover(atual.pk, filtro)
+    return Response({"removidos": removidos, "combate": dados_combate})
+
+
+@extend_schema(
+    methods=["PATCH"],
+    operation_id="atualizar_participante_combate",
+    request=AtualizarParticipanteSerializer,
+    responses=ParticipanteValoresSerializer,
+)
+@api_view(["PATCH"])
+@permission_classes([IsAuthenticated])
+def combate_participante(request, pk, participante_pk):
+    """Valores ABSOLUTOS de iniciativa / PV atual / PV máximo. Responde só os
+    valores (id, versao, iniciativa, pv_atual, pv_max) — nome e foto não
+    mudam, e é a operação mais frequente da mesa."""
+    participante, erro = _participante_do_gestor(request, pk, participante_pk)
+    if erro:
+        return erro
+    entrada = AtualizarParticipanteSerializer(data=request.data)
+    if not entrada.is_valid():
+        return Response(entrada.errors, status=status.HTTP_400_BAD_REQUEST)
+    dados = combate.atualizar_participante(participante, entrada.validated_data)
+    if dados is None:
+        return Response({"erro": "Participante não encontrado."}, status=status.HTTP_404_NOT_FOUND)
+    return Response(dados)
+
+
+@extend_schema(
+    methods=["POST"],
+    operation_id="aplicar_dano_combate",
+    request=DanoSerializer,
+    responses=ParticipanteValoresSerializer,
+)
+@api_view(["POST"])
+@permission_classes([IsAuthenticated])
+def combate_dano(request, pk, participante_pk):
+    """
+    Subtrai `valor` do PV atual no próprio UPDATE, nunca abaixo de 0. Por ser
+    relativo, danos consecutivos enviados antes das respostas se somam —
+    diferente de um PATCH de `pv_atual`, em que o último a chegar venceria.
+    """
+    participante, erro = _participante_do_gestor(request, pk, participante_pk)
+    if erro:
+        return erro
+    entrada = DanoSerializer(data=request.data)
+    if not entrada.is_valid():
+        return Response(entrada.errors, status=status.HTTP_400_BAD_REQUEST)
+    try:
+        dados = combate.aplicar_dano(participante, entrada.validated_data["valor"])
+    except combate.ErroCombate as exc:
+        return _erro_de_combate(exc)
+    if dados is None:
+        return Response({"erro": "Participante não encontrado."}, status=status.HTTP_404_NOT_FOUND)
+    return Response(dados)
+
+
+@extend_schema(
+    methods=["POST"],
+    operation_id="mudar_turno_combate",
+    request=TurnoSerializer,
+    responses=CombateDadosSerializer,
+)
+@api_view(["POST"])
+@permission_classes([IsAuthenticated])
+def combate_turno(request, pk):
+    """`{"acao": "proximo" | "anterior"}` — o servidor calcula quem age a
+    partir do turno GRAVADO (ver `combate.mudar_turno`), então cliques
+    rápidos não se anulam. Sem turno ativo, começa pelo primeiro."""
+    _, atual, erro = _combate_do_gestor(request, pk)
+    if erro:
+        return erro
+    entrada = TurnoSerializer(data=request.data)
+    if not entrada.is_valid():
+        return Response(entrada.errors, status=status.HTTP_400_BAD_REQUEST)
+    try:
+        return Response(combate.mudar_turno(atual, entrada.validated_data["acao"]))
+    except combate.ErroCombate as exc:
+        return _erro_de_combate(exc)
+
+
+@extend_schema(methods=["POST"], operation_id="reiniciar_combate", request=None, responses=CombateDadosSerializer)
+@api_view(["POST"])
+@permission_classes([IsAuthenticated])
+def combate_reiniciar(request, pk):
+    """Volta à rodada 1 sem ninguém agindo; os participantes ficam."""
+    _, atual, erro = _combate_do_gestor(request, pk)
+    if erro:
+        return erro
+    return Response(combate.reiniciar(atual))
