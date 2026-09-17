@@ -430,7 +430,7 @@ def defesa_lista(request, personagem_id):
 
     if request.method == "GET":
 
-        defesas = Defesa.objects.filter(personagem=personagem).order_by("id")
+        defesas = Defesa.objects.filter(personagem=personagem).order_by("ordem", "id")
 
         serializer = DefesaSerializer(defesas, many=True)
 

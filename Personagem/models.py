@@ -116,6 +116,11 @@ class Defesa(Versionado):
     nome = models.CharField(max_length=100)
     atributo = models.ForeignKey(Atributo, on_delete=models.SET_NULL, related_name='defesas', blank=True, null=True)
     valor = models.IntegerField(default=0)
+    ordem = models.PositiveIntegerField(default=0)
+    # Defesa exibida em destaque na ficha (ocupa a linha inteira, como
+    # Classe de Armadura/DT) — antes decidido por nome fixo no frontend,
+    # agora escolhido pelo jogador no modal de edição.
+    destaque = models.BooleanField(default=False)
 
     def __str__(self):
         return f"{self.nome} ({self.personagem.nome})"
