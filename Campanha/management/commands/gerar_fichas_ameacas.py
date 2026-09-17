@@ -1,9 +1,15 @@
 """
 Gera fichas de ameaça genéricas (NPC/Criatura) e salva como FichaPreset.
 
-    python manage.py gerar_fichas_ameacas [--usuario-id 1] [--apply]
+    python manage.py gerar_fichas_ameacas [--usuario-id 1] [--reset] [--apply]
 
 SEM `--apply` nada é gravado: só lista quantas fichas seriam criadas (dry-run).
+
+--reset apaga primeiro as predefinições já existentes cujo nome bate com o
+que este comando geraria (mesmo usuário) — necessário sempre que a lógica de
+geração mudar, já que `get_or_create` (abaixo) nunca sobrescreve uma ficha já
+criada com aquele nome. Sem `--apply`, `--reset` só lista quantas seriam
+apagadas, sem tocar em nada.
 
 Cobre as 4 Classes (Assassino, Guerreiro, Suporte, Tank) x 3 Papéis de
 Combate (Chefe, Rival, Servo) x 22 Níveis (1/4, 1/2, 1 a 20) = 264
@@ -147,8 +153,7 @@ CLASSES = {
         "sentido_media": "iniciativa",
     },
     "Tank": {
-        "passos": {"vida_base": 1, "defesa_base": 1, "dt": -1},
-        "atributo_pool_delta": -2,
+        "passos": {"vida_base": 1, "defesa_base": 1, "atributos_pool": -1, "dt": -1},
         "prioridade": [["for"], ["vig"], ["agi"], ["pre", "int"]],
         "ataque_attr": "for",
         "arma": ("Golpe de Maça", "Maça e escudo", "Arma", 8, "Corpo a corpo"),
@@ -244,7 +249,7 @@ def build_ficha(papel, classe_nome, ord_nivel, timestamp_base):
         for c in campos:
             valores[c] = linha_alvo[c]
 
-    pool = max(0, valores["atributos_pool"] + cfg.get("atributo_pool_delta", 0))
+    pool = max(0, valores["atributos_pool"])
     attrs = distribuir_atributos(pool, cfg["prioridade"], cap)
 
     vida = valores["vida_base"] + valores["vida_mult"] * attrs["vig"]
@@ -366,11 +371,17 @@ class Command(BaseCommand):
 
     def add_arguments(self, parser):
         parser.add_argument("--usuario-id", type=int, default=1, help="ID do usuário dono das predefinições (padrão: 1).")
-        parser.add_argument("--apply", action="store_true", help="Grava de fato (sem isto, só lista quantas seriam criadas).")
+        parser.add_argument(
+            "--reset", action="store_true",
+            help="Apaga antes as predefinições já existentes com nome gerado por este comando (mesmo usuário) — "
+                 "use ao corrigir a lógica de geração, já que get_or_create nunca sobrescreve o que já existe."
+        )
+        parser.add_argument("--apply", action="store_true", help="Grava (e apaga, com --reset) de fato — sem isto, só lista o que seria feito.")
 
     def handle(self, *args, **opcoes):
         usuario_id = opcoes["usuario_id"]
         aplicar = opcoes["apply"]
+        resetar = opcoes["reset"]
 
         Usuario = get_user_model()
         if not Usuario.objects.filter(pk=usuario_id).exists():
@@ -389,18 +400,27 @@ class Command(BaseCommand):
                     planejadas.append((nome, dados))
                     contador += 1
 
+        nomes_gerados = [nome for nome, _ in planejadas]
         self.stdout.write(f"{len(planejadas)} fichas planejadas para usuario_id={usuario_id}.")
+
+        if resetar:
+            a_apagar = FichaPreset.objects.filter(usuario_id=usuario_id, nome__in=nomes_gerados)
+            self.stdout.write(f"{a_apagar.count()} predefinição(ões) já existente(s) (mesmo gerador) seriam apagadas antes de recriar.")
 
         if not aplicar:
             for nome, _ in planejadas[:10]:
                 self.stdout.write(f"  {nome}")
             if len(planejadas) > 10:
                 self.stdout.write(f"  ... e mais {len(planejadas) - 10}.")
-            self.stdout.write(self.style.NOTICE("Dry-run: nada foi gravado. Use --apply para criar de fato."))
+            self.stdout.write(self.style.NOTICE("Dry-run: nada foi gravado/apagado. Use --apply para aplicar de fato."))
             return
 
         criadas, existentes = 0, 0
         with transaction.atomic():
+            if resetar:
+                apagadas, _ = FichaPreset.objects.filter(usuario_id=usuario_id, nome__in=nomes_gerados).delete()
+                self.stdout.write(f"Apagadas: {apagadas}")
+
             for nome, dados in planejadas:
                 _, foi_criado = FichaPreset.objects.get_or_create(
                     usuario_id=usuario_id, nome=nome, defaults={"dados": dados}
