@@ -89,7 +89,8 @@ def criar_dados_iniciais_personagem(personagem, modelo):
             nome="Classe de Armadura",
             atributo=destreza,
             valor=10,
-            icone="Shield"
+            icone="Shield",
+            destaque=True
         )
         
         Defesa.objects.create(
@@ -144,7 +145,8 @@ def criar_dados_iniciais_personagem(personagem, modelo):
             personagem=personagem,
             nome="DT",
             valor=8,
-            icone="Flame"
+            icone="Flame",
+            destaque=True
         )
         
         #PERÍCIAS
@@ -356,7 +358,8 @@ def criar_dados_iniciais_personagem(personagem, modelo):
         personagem=personagem,
         nome="Classe de Armadura",
         atributo=agilidade,
-        valor=10
+        valor=10,
+        destaque=True
     )
     
     Defesa.objects.create(
@@ -410,7 +413,8 @@ def criar_dados_iniciais_personagem(personagem, modelo):
         nome="DT",
         atributo=presenca,
         valor=10,
-        icone="Flame"
+        icone="Flame",
+        destaque=True
     )
 
     #PERÍCIAS
