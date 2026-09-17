@@ -863,16 +863,27 @@ class NotaSerializer(serializers.ModelSerializer):
     def get_autor(self, obj):
         if obj.personagem_id:
             foto = None
+            foto_ajuste = None
             try:
-                foto = obj.personagem.foto.url if obj.personagem.foto else None
+                if obj.personagem.foto:
+                    foto = obj.personagem.foto.url
+                    # BUGFIX (foto "descentralizada" nas notas): sem isto, o
+                    # avatar da nota sempre mostrava o CENTRO GEOMÉTRICO da
+                    # imagem original, ignorando o recorte/zoom que o
+                    # personagem salvou na própria ficha — o mesmo `foto` sem
+                    # o `foto_ajuste` que o acompanha em qualquer outro lugar
+                    # do app (Escudo, cards, cabeçalho da ficha).
+                    foto_ajuste = ajustes_do_objeto(self, obj.personagem, ["foto"]).get("foto")
             except Exception:
                 foto = None
+                foto_ajuste = None
 
             return {
                 "tipo": "personagem",
                 "id": obj.personagem_id,
                 "nome": obj.personagem.nome,
                 "foto": foto,
+                "foto_ajuste": foto_ajuste,
                 "cor": _cor_identificacao(f"personagem:{obj.personagem_id}"),
             }
 
@@ -881,6 +892,7 @@ class NotaSerializer(serializers.ModelSerializer):
             "id": obj.usuario_id,
             "nome": obj.usuario.first_name or obj.usuario.username,
             "foto": None,
+            "foto_ajuste": None,
             "cor": _cor_identificacao(f"usuario:{obj.usuario_id}"),
         }
 
