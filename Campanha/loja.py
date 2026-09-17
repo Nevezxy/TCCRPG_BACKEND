@@ -151,17 +151,20 @@ def janela_atual(categoria, agora=None):
     Índice da janela de tempo corrente, contado desde `rotacao_inicio`.
     `None` quando a categoria não rotaciona por tempo.
 
-    Antes do início configurado (o mestre pode agendar para o futuro) a
-    janela é 0 — a primeira seleção já vale, ela só para de trocar.
+    `rotacao_inicio` é uma ÂNCORA de fase, não uma data de largada: as
+    trocas acontecem em `inicio + k × intervalo` para qualquer `k` inteiro,
+    inclusive negativo. Assim "todo dia às 18:00" configurado às 14:00 troca
+    HOJE às 18:00 — antes, uma âncora no futuro congelava a janela em 0 e a
+    primeira troca só vinha um intervalo inteiro depois dela (amanhã às
+    18:00), o que não batia com o que a tela prometia. `//` entre timedeltas
+    é divisão com piso, então janelas antes da âncora saem negativas e
+    contínuas.
     """
     intervalo = _intervalo(categoria)
     if intervalo is None:
         return None
     agora = agora or timezone.now()
-    decorrido = agora - categoria.rotacao_inicio
-    if decorrido.total_seconds() < 0:
-        return 0
-    return int(decorrido // intervalo)
+    return int((agora - categoria.rotacao_inicio) // intervalo)
 
 
 def proxima_rotacao(categoria, agora=None):
@@ -239,6 +242,9 @@ def _dados_categoria(categoria, agora):
             "metodo": categoria.rotacao_metodo,
             "quantidade": categoria.rotacao_quantidade,
             "intervalo_minutos": categoria.rotacao_intervalo_minutos,
+            # A âncora das trocas: sem ela o formulário de edição não teria
+            # como mostrar (nem preservar) o horário configurado.
+            "inicio": categoria.rotacao_inicio,
             "proxima_em": proxima_rotacao(categoria, agora) if categoria.rotacao_ativa else None,
         },
     }

@@ -47,6 +47,15 @@ class Campanha(models.Model):
 
     sistemas = models.ManyToManyField(Sistema, related_name='campanhas_bibliotecas', blank=True)
 
+    # Ordem dos personagens no Escudo do Mestre: lista de ids, definida pelo
+    # mestre arrastando os cards. Um JSON na campanha, e não um `ordem` na
+    # tabela M2M de `personagens`: trocar o `through` de um M2M existente é
+    # uma migração de dados arriscada, e esta ordem é uma preferência de
+    # EXIBIÇÃO do Escudo, não uma propriedade do vínculo. Ids que saíram da
+    # campanha são ignorados na leitura; quem entrou e não está na lista vai
+    # para o fim (ver `escudo.ordenar_personagens`).
+    escudo_ordem = models.JSONField(default=list, blank=True)
+
     criado_em = models.DateTimeField(auto_now_add=True)
     atualizado_em = models.DateTimeField(auto_now=True)
 

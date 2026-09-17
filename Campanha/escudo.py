@@ -90,6 +90,21 @@ def personagens_resumo(personagens):
 # Snapshot
 # ---------------------------------------------------------------------------
 
+def ordenar_personagens(ids, escudo_ordem):
+    """
+    `ids` na ordem que o mestre definiu no Escudo. Ids da lista gravada que
+    não estão mais na campanha são ignorados; personagens que entraram
+    depois (e portanto não estão na lista) vão para o fim, por id — a ordem
+    é sempre total e determinística, igual em todos os clientes.
+    """
+    posicao = {}
+    for pid in escudo_ordem if isinstance(escudo_ordem, list) else []:
+        if isinstance(pid, int) and pid not in posicao:
+            posicao[pid] = len(posicao)
+    fim = len(posicao)
+    return sorted(ids, key=lambda pid: (posicao.get(pid, fim), pid))
+
+
 def montar_snapshot(campanha, personagem_ids=None):
     """
     Carga completa do Escudo em 6 consultas fixas (personagens, enquadramento
@@ -102,9 +117,9 @@ def montar_snapshot(campanha, personagem_ids=None):
         qs = qs.filter(id__in=personagem_ids)
     personagens = list(qs)
     if not personagens:
-        return {"personagens": []}
+        return {"personagens": [], "ordem": []}
 
-    ids = [p.id for p in personagens]
+    ids = ordenar_personagens([p.id for p in personagens], campanha.escudo_ordem)
     status = list(Status.objects.filter(personagem_id__in=ids).order_by("ordem", "id"))
     atributos = list(Atributo.objects.filter(personagem_id__in=ids).order_by("id"))
     defesas = list(Defesa.objects.filter(personagem_id__in=ids).order_by("id"))
@@ -139,7 +154,7 @@ def montar_snapshot(campanha, personagem_ids=None):
         if personagem_id is not None:
             por_personagem[personagem_id]["bonus"].append(bonus_dados(b, tipo))
 
-    return {"personagens": [por_personagem[i] for i in ids]}
+    return {"personagens": [por_personagem[i] for i in ids], "ordem": ids}
 
 
 # ---------------------------------------------------------------------------

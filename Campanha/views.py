@@ -1,3 +1,5 @@
+from functools import partial
+
 from drf_spectacular.utils import extend_schema
 from rest_framework import status
 from rest_framework.decorators import api_view, permission_classes
@@ -54,6 +56,7 @@ from Usuario.permissions import (
     usuario_pode_ver_objeto,
 )
 from .escudo import montar_snapshot
+from . import escudo
 from . import combate, comercio, loja
 from .serializers import (
     AdicionarParticipantesSerializer,
@@ -2798,6 +2801,62 @@ def escudo_campanha(request, pk):
         return erro
 
     return Response(montar_snapshot(campanha))
+
+
+@extend_schema(
+    methods=["PUT"],
+    operation_id="ordenar_escudo_campanha",
+    request={
+        "application/json": {
+            "type": "object",
+            "properties": {"ids": {"type": "array", "items": {"type": "integer"}}},
+            "required": ["ids"],
+        }
+    },
+    responses={200: {"type": "object", "properties": {"ordem": {"type": "array", "items": {"type": "integer"}}}}},
+)
+@api_view(["PUT"])
+@permission_classes([IsAuthenticated])
+def escudo_ordem(request, pk):
+    """
+    Ordem dos cards de personagem no Escudo, definida pelo mestre (ou
+    moderador) arrastando os cards. `ids` é a ordem desejada; o servidor
+    grava a ordem COMPLETA (quem faltou na lista vai para o fim, ver
+    `escudo.ordenar_personagens`) e avisa os Escudos abertos pelo WebSocket,
+    para a mesa inteira ver a mesma arrumação.
+    """
+    campanha, erro = _busca_campanha_do_participante(request, pk)
+    if erro:
+        return erro
+    if not pode_gerenciar_campanha(campanha, request.user):
+        return Response(
+            {"erro": "Apenas o mestre da campanha pode reordenar o Escudo."},
+            status=status.HTTP_403_FORBIDDEN,
+        )
+
+    ids = request.data.get("ids") if isinstance(request.data, dict) else None
+    if (
+        not isinstance(ids, list)
+        or any(not isinstance(i, int) or isinstance(i, bool) for i in ids)
+        or len(ids) != len(set(ids))
+    ):
+        return Response({"ids": ["Informe uma lista de ids de personagem, sem repetição."]}, status=status.HTTP_400_BAD_REQUEST)
+
+    da_campanha = set(campanha.personagens.values_list("id", flat=True))
+    estranhos = [i for i in ids if i not in da_campanha]
+    if estranhos:
+        return Response(
+            {"ids": [f"Personagens que não estão nesta campanha: {estranhos}."]},
+            status=status.HTTP_400_BAD_REQUEST,
+        )
+
+    ordem = escudo.ordenar_personagens(list(da_campanha), ids)
+    campanha.escudo_ordem = ordem
+    campanha.save(update_fields=["escudo_ordem", "atualizado_em"])
+    transaction.on_commit(
+        partial(escudo.publicar, [campanha.pk], {"tipo": "ordem", "ids": ordem}), robust=True
+    )
+    return Response({"ordem": ordem})
 
 
 # ---------------------------------------------------------------------------

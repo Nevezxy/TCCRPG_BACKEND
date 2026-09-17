@@ -1809,6 +1809,63 @@ class RotacaoTests(LojaBaseTestCase):
             response.data["proxima_rotacao_em"], timezone.now() + timedelta(minutes=60)
         )
 
+    def test_ancora_no_futuro_troca_no_proximo_horario_e_nao_um_intervalo_depois(self):
+        """"Todo dia às 18:00" salvo às 14:00: a próxima troca é HOJE às
+        18:00. Antes, a âncora no futuro congelava a janela e a primeira troca
+        caía só no dia seguinte."""
+        agora = timezone.now().replace(microsecond=0)
+        self.categoria.rotacao_intervalo_minutos = 24 * 60
+        self.categoria.rotacao_inicio = agora + timedelta(hours=4)
+
+        self.assertEqual(loja.proxima_rotacao(self.categoria, agora), agora + timedelta(hours=4))
+        # E a seleção de antes e de depois da âncora são janelas diferentes.
+        antes = self._selecao(agora, metodo="ordem")
+        depois = self._selecao(agora + timedelta(hours=5), metodo="ordem")
+        self.assertNotEqual(antes, depois)
+
+    def test_janelas_sao_continuas_em_volta_da_ancora(self):
+        inicio = self.categoria.rotacao_inicio
+        self.assertEqual(loja.janela_atual(self.categoria, inicio - timedelta(minutes=1)), -1)
+        self.assertEqual(loja.janela_atual(self.categoria, inicio), 0)
+        self.assertEqual(loja.janela_atual(self.categoria, inicio + timedelta(minutes=59)), 0)
+
+    def test_vitrine_devolve_a_configuracao_completa_para_o_formulario(self):
+        """Regressão do bug de "a rotação não salva": o formulário de edição
+        abria a partir da vitrine, que não trazia a âncora, e reenviava os
+        valores padrão por cima do que estava gravado."""
+        self.autentica_como(self.mestre_a)
+
+        rotacao = self.client.get(f"/campanha/{self.campanha_a.id}/loja/").data["categorias"][0]["rotacao"]
+
+        self.assertTrue(rotacao["ativa"])
+        self.assertEqual(rotacao["quantidade"], 2)
+        self.assertEqual(rotacao["intervalo_minutos"], 60)
+        self.assertEqual(rotacao["inicio"], self.inicio)
+
+    def test_editar_so_o_nome_preserva_a_rotacao(self):
+        self.autentica_como(self.mestre_a)
+
+        response = self.client.patch(
+            f"/campanha/loja/categorias/{self.categoria.id}/", {"nome": "Relíquias"}, format="json"
+        )
+
+        self.assertEqual(response.status_code, status.HTTP_200_OK, response.data)
+        self.categoria.refresh_from_db()
+        self.assertTrue(self.categoria.rotacao_ativa)
+        self.assertEqual(self.categoria.rotacao_intervalo_minutos, 60)
+        self.assertEqual(self.categoria.rotacao_inicio, self.inicio)
+
+    def test_intervalo_acima_do_limite_e_recusado(self):
+        self.autentica_como(self.mestre_a)
+
+        response = self.client.patch(
+            f"/campanha/loja/categorias/{self.categoria.id}/",
+            {"rotacao_intervalo_minutos": 53 * 7 * 24 * 60},
+            format="json",
+        )
+
+        self.assertEqual(response.status_code, status.HTTP_400_BAD_REQUEST)
+
     def test_sem_rotacao_efetiva_a_vitrine_nao_agenda_despertador(self):
         """Rotação ligada mas com vitrine maior que o estoque: nada muda, e
         acordar o cliente seria uma requisição à toa."""

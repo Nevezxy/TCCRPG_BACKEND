@@ -146,6 +146,67 @@ class SnapshotTests(EscudoBase):
         self.assertEqual(len(com_quatro), len(com_um))
 
 
+class OrdemTests(EscudoBase):
+    """Ordem dos cards no Escudo, arrumada pelo mestre."""
+
+    def setUp(self):
+        super().setUp()
+        self.bram = Personagem.objects.create(usuario=self.jogador, nome="Bram", nivel=2)
+        self.cassia = Personagem.objects.create(usuario=self.jogador, nome="Cassia", nivel=2)
+        self.campanha.personagens.add(self.bram, self.cassia)
+        self.receber_todos()
+
+    def ordenar(self, ids, usuario=None):
+        self.client.force_authenticate(user=usuario or self.mestre)
+        return self.client.put(f"/campanha/{self.campanha.pk}/escudo/ordem/", {"ids": ids}, format="json")
+
+    def ids_do_snapshot(self):
+        self.client.force_authenticate(user=self.jogador)
+        dados = self.client.get(f"/campanha/{self.campanha.pk}/escudo/").data
+        self.assertEqual(dados["ordem"], [p["id"] for p in dados["personagens"]])
+        return dados["ordem"]
+
+    def test_sem_ordem_definida_segue_o_id(self):
+        self.assertEqual(self.ids_do_snapshot(), [self.personagem.pk, self.bram.pk, self.cassia.pk])
+
+    def test_mestre_reordena_e_a_mesa_inteira_ve_a_nova_ordem(self):
+        with self.captureOnCommitCallbacks(execute=True):
+            resposta = self.ordenar([self.cassia.pk, self.personagem.pk, self.bram.pk])
+
+        self.assertEqual(resposta.status_code, status.HTTP_200_OK, resposta.data)
+        esperada = [self.cassia.pk, self.personagem.pk, self.bram.pk]
+        self.assertEqual(resposta.data["ordem"], esperada)
+        self.assertEqual(self.receber(), {"tipo": "ordem", "ids": esperada})
+        self.assertEqual(self.ids_do_snapshot(), esperada)
+
+    def test_lista_parcial_completa_com_os_que_faltaram_no_fim(self):
+        resposta = self.ordenar([self.cassia.pk])
+        self.assertEqual(resposta.data["ordem"], [self.cassia.pk, self.personagem.pk, self.bram.pk])
+
+    def test_quem_entra_depois_vai_para_o_fim_e_quem_sai_some(self):
+        self.ordenar([self.cassia.pk, self.bram.pk, self.personagem.pk])
+        novo = Personagem.objects.create(usuario=self.jogador, nome="Dario", nivel=1)
+        self.campanha.personagens.add(novo)
+        self.campanha.personagens.remove(self.bram)
+        self.assertEqual(self.ids_do_snapshot(), [self.cassia.pk, self.personagem.pk, novo.pk])
+
+    def test_jogador_nao_reordena(self):
+        self.assertEqual(self.ordenar([self.bram.pk], usuario=self.jogador).status_code, status.HTTP_403_FORBIDDEN)
+
+    def test_ids_invalidos_sao_recusados(self):
+        outro = Personagem.objects.create(usuario=self.estranho, nome="Intruso", nivel=1)
+        for ids in ([outro.pk], [self.bram.pk, self.bram.pk], "abc", [True]):
+            self.assertEqual(self.ordenar(ids).status_code, status.HTTP_400_BAD_REQUEST, ids)
+        self.campanha.refresh_from_db()
+        self.assertEqual(self.campanha.escudo_ordem, [])
+
+    def test_patch_da_campanha_nao_altera_a_ordem(self):
+        self.client.force_authenticate(user=self.mestre)
+        self.client.patch(f"/campanha/{self.campanha.pk}/", {"escudo_ordem": [self.bram.pk]}, format="json")
+        self.campanha.refresh_from_db()
+        self.assertEqual(self.campanha.escudo_ordem, [])
+
+
 class EventosTests(EscudoBase):
 
     def test_patch_de_status_publica_so_a_linha_alterada(self):

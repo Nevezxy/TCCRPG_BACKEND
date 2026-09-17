@@ -166,6 +166,9 @@ class CampanhaSerializer(SincronizaSistemasMixin, CloudinaryUrlSerializerMixin, 
             # PATCH/PUT na campanha, ver `IsOwnerOrAdmin`) conseguiria se
             # autopromover ou promover/remover qualquer outro moderador.
             "moderadores",
+            # Só muda pela rota do Escudo (`escudo_ordem`), que valida os ids
+            # e avisa os Escudos abertos.
+            "escudo_ordem",
             "codigo",
             "criado_em",
             "atualizado_em",
@@ -1112,6 +1115,11 @@ class ArmaduraCampanhaSerializer(EntidadeMundoSerializer):
 # Loja da campanha
 # ---------------------------------------------------------------------------
 
+# 52 semanas: acima disso a "rotação" deixa de ser um ciclo de mesa, e o
+# limite mantém o intervalo representável com folga no frontend.
+INTERVALO_ROTACAO_MAXIMO = 52 * 7 * 24 * 60
+
+
 class CategoriaLojaSerializer(serializers.ModelSerializer):
     """
     Prateleira da loja. `campanha` vem sempre da URL (mesmo racional das
@@ -1160,6 +1168,8 @@ class CategoriaLojaSerializer(serializers.ModelSerializer):
     def validate_rotacao_intervalo_minutos(self, valor):
         if valor < 1:
             raise serializers.ValidationError("O intervalo da rotação precisa ser de pelo menos 1 minuto.")
+        if valor > INTERVALO_ROTACAO_MAXIMO:
+            raise serializers.ValidationError("O intervalo da rotação pode ser de no máximo 52 semanas.")
         return valor
 
 

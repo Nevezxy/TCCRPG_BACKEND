@@ -594,6 +594,7 @@ urlpatterns = [
         views.escudo_campanha,
         name="escudo_campanha"
     ),
+    path("<int:pk>/escudo/ordem/", views.escudo_ordem, name="escudo_ordem"),
 
     # Combate do Escudo (iniciativa, PV de combate, turno). As mudanças
     # também chegam pelo WebSocket do Escudo — ver Campanha/combate.py.
