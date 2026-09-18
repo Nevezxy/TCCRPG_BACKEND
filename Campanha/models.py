@@ -98,10 +98,16 @@ class NPC(models.Model):
         ("desaparecido", "Desaparecido"),
     ], blank=True)
 
+    # Campos estruturados curtos — voltam como CharField (não mais parte do
+    # `conteudo` em Markdown) para aparecerem como atributo filtrável/no
+    # card, não enterrados dentro do texto livre.
+    ocupacao = models.CharField(max_length=200, blank=True)
+    status_social = models.CharField(max_length=200, blank=True)
+
     # Campo unificado de conteúdo narrativo, em Markdown puro. Substitui os
     # antigos TextFields narrativos (aparencia, personalidade, familia,
-    # maior_desejo, maior_prazer, peculiaridade, ocupacao, status_social,
-    # segredo, anotacoes) — migrados para cá pela migration de dados 0008.
+    # maior_desejo, maior_prazer, peculiaridade, segredo, anotacoes) —
+    # migrados para cá pela migration de dados 0008.
     conteudo = models.TextField(blank=True)
 
     localizacao = models.ForeignKey('Local', on_delete=models.SET_NULL, null=True, blank=True, related_name="npcs_localizados")
@@ -927,8 +933,9 @@ class Raca(EntidadeMundo):
     expectativa_vida = models.CharField(max_length=100, blank=True)
     tipo_sociedade = models.CharField(max_length=200, blank=True)
 
-    tendencias = models.TextField(blank=True)
-    tracos_raciais = models.TextField(blank=True)
+    # `tendencias`/`tracos_raciais` (TextField) foram removidos daqui — ver
+    # nota em NPC.conteudo: viraram seções do `conteudo` em Markdown
+    # (migration de dados 0026), como as demais entidades de mundo.
 
     class Meta(EntidadeMundo.Meta):
         verbose_name = "Raça"
