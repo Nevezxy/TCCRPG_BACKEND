@@ -332,18 +332,21 @@ class ConteudoMarkdownTests(DuasCampanhasTestCase):
     def test_campos_narrativos_antigos_nao_existem_mais_no_modelo(self):
         """
         Confirma que o consolidamento em `conteudo` de fato substituiu os
-        campos antigos (e não apenas os manteve em paralelo).
+        campos antigos (e não apenas os manteve em paralelo). `ocupacao` e
+        `status_social` NÃO entram aqui: voltaram como CharField estruturado
+        (migration 0025), não como texto dentro do Markdown.
         """
         campos_do_model = {f.name for f in NPC._meta.get_fields()}
 
         for campo_antigo in (
             "aparencia", "personalidade", "familia", "maior_desejo",
-            "maior_prazer", "peculiaridade", "ocupacao", "status_social",
-            "segredo", "anotacoes",
+            "maior_prazer", "peculiaridade", "segredo", "anotacoes",
         ):
             self.assertNotIn(campo_antigo, campos_do_model)
 
         self.assertIn("conteudo", campos_do_model)
+        self.assertIn("ocupacao", campos_do_model)
+        self.assertIn("status_social", campos_do_model)
 
     def test_local_organizacao_tambem_tem_conteudo(self):
         """Mesma consolidação em outras entidades além de NPC."""
