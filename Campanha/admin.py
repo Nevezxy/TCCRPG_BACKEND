@@ -23,6 +23,10 @@ from .models import (
     ItemCampanha,
     ArmaCampanha,
     ArmaduraCampanha,
+    TecnicaCampanha,
+    PoderCampanha,
+    HabilidadeCampanha,
+    AprimoramentoCampanha,
     Combate,
     ParticipanteCombate,
 )
@@ -303,6 +307,34 @@ class ArmaCampanhaAdmin(EntidadeMundoAdmin):
 class ArmaduraCampanhaAdmin(EntidadeMundoAdmin):
     list_display = EntidadeMundoAdmin.list_display + ("defesa", "peso", "valor")
     list_filter = EntidadeMundoAdmin.list_filter + ("qualidade",)
+
+
+# ---------------------------------------------------------------------------
+# Técnica/Poder/Habilidade exclusivos da campanha — mesma base de
+# EntidadeMundo. `AprimoramentoCampanha` não é EntidadeMundo (ver model),
+# então vira um inline da Habilidade, no mesmo molde de `NotaInline`.
+# ---------------------------------------------------------------------------
+
+@admin.register(TecnicaCampanha)
+class TecnicaCampanhaAdmin(EntidadeMundoAdmin):
+    pass
+
+
+@admin.register(PoderCampanha)
+class PoderCampanhaAdmin(EntidadeMundoAdmin):
+    list_display = EntidadeMundoAdmin.list_display + ("tag", "custo")
+
+
+class AprimoramentoCampanhaInline(admin.TabularInline):
+    model = AprimoramentoCampanha
+    extra = 0
+    fields = ("ordem", "nome", "custo", "descricao")
+
+
+@admin.register(HabilidadeCampanha)
+class HabilidadeCampanhaAdmin(EntidadeMundoAdmin):
+    list_display = EntidadeMundoAdmin.list_display + ("tag", "nivel", "custo")
+    inlines = [NotaInline, AprimoramentoCampanhaInline]
 
 
 # ---------------------------------------------------------------------------
