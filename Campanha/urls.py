@@ -440,6 +440,81 @@ urlpatterns = [
         name="copiar_armadura_campanha"
     ),
 
+    # ------------------------------------------------------------------
+    # Técnica/Poder/Habilidade/Aprimoramento exclusivos da campanha — mesma
+    # fábrica `_crud_mundo` das demais entidades de mundo (ver comentário em
+    # views.py). Aprimoramento é aninhado em Habilidade, igual a Personagem.
+    # ------------------------------------------------------------------
+    # Técnicas da campanha
+    path(
+        "<int:pk>/tecnicas-campanha/",
+        views.tecnicacampanha_lista,
+        name="tecnicacampanha_lista"
+    ),
+
+    path(
+        "tecnicas-campanha/<int:obj_pk>/",
+        views.tecnicacampanha_detalhe,
+        name="tecnicacampanha_detalhe"
+    ),
+
+    path(
+        "tecnicas-campanha/<int:obj_pk>/conexoes/",
+        views.tecnicacampanha_conexoes,
+        name="tecnicacampanha_conexoes"
+    ),
+
+    # Poderes da campanha
+    path(
+        "<int:pk>/poderes-campanha/",
+        views.podercampanha_lista,
+        name="podercampanha_lista"
+    ),
+
+    path(
+        "poderes-campanha/<int:obj_pk>/",
+        views.podercampanha_detalhe,
+        name="podercampanha_detalhe"
+    ),
+
+    path(
+        "poderes-campanha/<int:obj_pk>/conexoes/",
+        views.podercampanha_conexoes,
+        name="podercampanha_conexoes"
+    ),
+
+    # Habilidades da campanha
+    path(
+        "<int:pk>/habilidades-campanha/",
+        views.habilidadecampanha_lista,
+        name="habilidadecampanha_lista"
+    ),
+
+    path(
+        "habilidades-campanha/<int:obj_pk>/",
+        views.habilidadecampanha_detalhe,
+        name="habilidadecampanha_detalhe"
+    ),
+
+    path(
+        "habilidades-campanha/<int:obj_pk>/conexoes/",
+        views.habilidadecampanha_conexoes,
+        name="habilidadecampanha_conexoes"
+    ),
+
+    # Aprimoramentos, aninhados na Habilidade
+    path(
+        "habilidades-campanha/<int:habilidade_id>/aprimoramentos/",
+        views.aprimoramentocampanha_lista,
+        name="aprimoramentocampanha_lista"
+    ),
+
+    path(
+        "aprimoramentos-campanha/<int:pk>/",
+        views.aprimoramentocampanha_detalhe,
+        name="aprimoramentocampanha_detalhe"
+    ),
+
 
     # ------------------------------------------------------------------
     # Loja da campanha — categorias e produtos são do mestre; a vitrine
