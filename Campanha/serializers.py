@@ -28,6 +28,10 @@ from .models import (
     ItemCampanha,
     ArmaCampanha,
     ArmaduraCampanha,
+    TecnicaCampanha,
+    PoderCampanha,
+    HabilidadeCampanha,
+    AprimoramentoCampanha,
     CategoriaLoja,
     ProdutoLoja,
     TransacaoLoja,
@@ -202,6 +206,7 @@ _MODELOS_NOTAVEIS = [
     Campanha, NPC, Local, Organizacao, Mapa, Sessao, Missao, Evento,
     Documento, Imagem, Canva, Criatura, Divindade, Raca,
     ItemCampanha, ArmaCampanha, ArmaduraCampanha,
+    TecnicaCampanha, PoderCampanha, HabilidadeCampanha,
     Personagem,
 ]
 
@@ -1121,6 +1126,49 @@ class ArmaduraCampanhaSerializer(EntidadeMundoSerializer):
 
     class Meta(EntidadeMundoSerializer.Meta):
         model = ArmaduraCampanha
+
+
+# ---------------------------------------------------------------------------
+# Técnica/Poder/Habilidade/Aprimoramento exclusivos da campanha — mesma base
+# `EntidadeMundoSerializer` dos equipamentos; o campo de imagem é `midia`
+# (mesmo nome do equivalente em Personagem). `AprimoramentoCampanha` NÃO
+# passa por `EntidadeMundoSerializer` (não é uma EntidadeMundo — não tem
+# pasta/visibilidade próprias, ver comentário no model): é um
+# ModelSerializer simples, no mesmo molde do `AprimoramentoSerializer` de
+# Personagem, com `habilidade` de fora (vem da URL, ver
+# `aprimoramentocampanha_lista`).
+# ---------------------------------------------------------------------------
+
+class TecnicaCampanhaSerializer(EntidadeMundoSerializer):
+
+    media_fields = ["midia"]
+
+    class Meta(EntidadeMundoSerializer.Meta):
+        model = TecnicaCampanha
+
+
+class PoderCampanhaSerializer(EntidadeMundoSerializer):
+
+    media_fields = ["midia"]
+
+    class Meta(EntidadeMundoSerializer.Meta):
+        model = PoderCampanha
+
+
+class HabilidadeCampanhaSerializer(EntidadeMundoSerializer):
+
+    media_fields = ["midia"]
+
+    class Meta(EntidadeMundoSerializer.Meta):
+        model = HabilidadeCampanha
+
+
+class AprimoramentoCampanhaSerializer(serializers.ModelSerializer):
+
+    class Meta:
+        model = AprimoramentoCampanha
+        fields = "__all__"
+        read_only_fields = ("habilidade",)
 
 
 # ---------------------------------------------------------------------------

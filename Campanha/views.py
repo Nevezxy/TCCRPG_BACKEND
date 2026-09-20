@@ -42,6 +42,10 @@ from .models import (
     ItemCampanha,
     ArmaCampanha,
     ArmaduraCampanha,
+    TecnicaCampanha,
+    PoderCampanha,
+    HabilidadeCampanha,
+    AprimoramentoCampanha,
     CategoriaLoja,
     ProdutoLoja,
     TransacaoLoja,
@@ -93,6 +97,10 @@ from .serializers import (
     ItemCampanhaSerializer,
     ArmaCampanhaSerializer,
     ArmaduraCampanhaSerializer,
+    TecnicaCampanhaSerializer,
+    PoderCampanhaSerializer,
+    HabilidadeCampanhaSerializer,
+    AprimoramentoCampanhaSerializer,
     CategoriaLojaSerializer,
     ProdutoLojaSerializer,
     TransacaoLojaSerializer,
@@ -2708,6 +2716,13 @@ _BUSCA_MODELOS = [
     ("itemcampanha", ItemCampanha, "nome"),
     ("armacampanha", ArmaCampanha, "nome"),
     ("armaduracampanha", ArmaduraCampanha, "nome"),
+    ("tecnicacampanha", TecnicaCampanha, "nome"),
+    # `podercampanha` fica de fora de propósito: como `HabilidadeCampanha`
+    # herda de `PoderCampanha` (mesma tabela), uma busca genérica aqui
+    # listaria toda Habilidade DUAS VEZES — uma como "podercampanha", outra
+    # como "habilidadecampanha". Mesmo motivo pelo qual `podercampanha_lista`
+    # (abaixo) filtra `habilidadecampanha__isnull=True` na listagem.
+    ("habilidadecampanha", HabilidadeCampanha, "nome"),
 ]
 
 
@@ -2884,6 +2899,8 @@ _SERIALIZER_POR_TIPO = {
     "itemcampanha": ItemCampanhaSerializer,
     "armacampanha": ArmaCampanhaSerializer,
     "armaduracampanha": ArmaduraCampanhaSerializer,
+    "tecnicacampanha": TecnicaCampanhaSerializer,
+    "habilidadecampanha": HabilidadeCampanhaSerializer,
 }
 
 # tipo -> (Modelo, SerializerClass, campo_titulo)
@@ -3216,6 +3233,179 @@ armacampanha_lista, armacampanha_detalhe, armacampanha_conexoes = _crud_mundo(
 armaduracampanha_lista, armaduracampanha_detalhe, armaduracampanha_conexoes = _crud_mundo(
     "armaduracampanha", "armaduras_campanha", ArmaduraCampanha, ArmaduraCampanhaSerializer, "Armadura"
 )
+
+
+# ---------------------------------------------------------------------------
+# Técnica/Poder/Habilidade exclusivos da campanha — mesma fábrica das demais
+# entidades de mundo. `PoderCampanha` é a única exceção: como
+# `HabilidadeCampanha` herda dela (mesma tabela), a LISTAGEM genérica de
+# `_crud_mundo` mostraria toda Habilidade também como Poder — por isso a
+# listagem é escrita à mão abaixo, filtrando `habilidadecampanha__isnull=True`
+# (mesmo tratamento que `Personagem.views.poder_lista` já dá ao mesmo
+# problema). Detalhe e conexões continuam vindo da fábrica normalmente: ali
+# o pk já identifica exatamente uma linha, sem ambiguidade.
+# ---------------------------------------------------------------------------
+tecnicacampanha_lista, tecnicacampanha_detalhe, tecnicacampanha_conexoes = _crud_mundo(
+    "tecnicacampanha", "tecnicas_campanha", TecnicaCampanha, TecnicaCampanhaSerializer, "Técnica"
+)
+_, podercampanha_detalhe, podercampanha_conexoes = _crud_mundo(
+    "podercampanha", "poderes_campanha", PoderCampanha, PoderCampanhaSerializer, "Poder"
+)
+habilidadecampanha_lista, habilidadecampanha_detalhe, habilidadecampanha_conexoes = _crud_mundo(
+    "habilidadecampanha", "habilidades_campanha", HabilidadeCampanha, HabilidadeCampanhaSerializer, "Habilidade"
+)
+
+
+@extend_schema(
+    methods=["GET"], operation_id="listar_poderes_campanha", responses=PoderCampanhaSerializer(many=True)
+)
+@extend_schema(
+    methods=["POST"],
+    operation_id="criar_poder_campanha",
+    request=PoderCampanhaSerializer,
+    responses=PoderCampanhaSerializer,
+)
+@api_view(["GET", "POST"])
+@permission_classes([IsAuthenticated])
+def podercampanha_lista(request, pk):
+    campanha, erro = _busca_campanha_do_participante(request, pk)
+
+    if erro:
+        return erro
+
+    if request.method == "GET":
+        itens = _filtra_visiveis(
+            request,
+            campanha,
+            PoderCampanha.objects.filter(campanha=campanha, habilidadecampanha__isnull=True),
+        )
+
+        return Response(PoderCampanhaSerializer(itens, many=True).data)
+
+    erro = _exige_mestre(request, campanha)
+
+    if erro:
+        return erro
+
+    serializer = PoderCampanhaSerializer(
+        data=request.data, context={"campanha": campanha, "request": request}
+    )
+
+    if serializer.is_valid():
+        obj = serializer.save(campanha=campanha)
+
+        return Response(PoderCampanhaSerializer(obj).data, status=status.HTTP_201_CREATED)
+
+    return Response(serializer.errors, status=status.HTTP_400_BAD_REQUEST)
+
+
+# ---------------------------------------------------------------------------
+# Aprimoramentos de HabilidadeCampanha — mesmo molde de
+# `Personagem.views.aprimoramento_lista/aprimoramento_detalhe`.
+# `AprimoramentoCampanha` não tem `campanha` própria (só `habilidade`), então
+# a permissão é sempre delegada para a Habilidade dona (`check_object_permission`
+# não sabe resolver Aprimoramento diretamente — ver nota na view de detalhe).
+# ---------------------------------------------------------------------------
+
+@extend_schema(
+    methods=["GET"],
+    operation_id="listar_aprimoramentos_habilidade_campanha",
+    responses=AprimoramentoCampanhaSerializer(many=True),
+)
+@extend_schema(
+    methods=["POST"],
+    operation_id="criar_aprimoramento_habilidade_campanha",
+    request=AprimoramentoCampanhaSerializer,
+    responses=AprimoramentoCampanhaSerializer,
+)
+@api_view(["GET", "POST"])
+@permission_classes([IsAuthenticated])
+def aprimoramentocampanha_lista(request, habilidade_id):
+
+    try:
+        habilidade = HabilidadeCampanha.objects.select_related("campanha").get(pk=habilidade_id)
+
+    except HabilidadeCampanha.DoesNotExist:
+        return Response({"erro": "Habilidade não encontrada."}, status=status.HTTP_404_NOT_FOUND)
+
+    check_object_permission(request, habilidade)
+
+    if request.method == "GET":
+
+        aprimoramentos = AprimoramentoCampanha.objects.filter(habilidade=habilidade)
+
+        return Response(AprimoramentoCampanhaSerializer(aprimoramentos, many=True).data)
+
+    # POST — mesma regra de criar qualquer conteúdo de mundo: só mestre.
+    erro = _exige_mestre(request, habilidade.campanha)
+
+    if erro:
+        return erro
+
+    serializer = AprimoramentoCampanhaSerializer(data=request.data)
+
+    if serializer.is_valid():
+        aprimoramento = serializer.save(habilidade=habilidade)
+
+        return Response(AprimoramentoCampanhaSerializer(aprimoramento).data, status=status.HTTP_201_CREATED)
+
+    return Response(serializer.errors, status=status.HTTP_400_BAD_REQUEST)
+
+
+@extend_schema(
+    methods=["GET"], operation_id="detalhar_aprimoramento_campanha", responses=AprimoramentoCampanhaSerializer
+)
+@extend_schema(
+    methods=["PUT"],
+    operation_id="atualizar_aprimoramento_campanha",
+    request=AprimoramentoCampanhaSerializer,
+    responses=AprimoramentoCampanhaSerializer,
+)
+@extend_schema(
+    methods=["PATCH"],
+    operation_id="atualizar_parcial_aprimoramento_campanha",
+    request=AprimoramentoCampanhaSerializer,
+    responses=AprimoramentoCampanhaSerializer,
+)
+@extend_schema(methods=["DELETE"], operation_id="remover_aprimoramento_campanha", responses=None)
+@api_view(["GET", "PUT", "PATCH", "DELETE"])
+@permission_classes([IsAuthenticated])
+def aprimoramentocampanha_detalhe(request, pk):
+
+    try:
+        aprimoramento = AprimoramentoCampanha.objects.select_related("habilidade__campanha").get(pk=pk)
+
+    except AprimoramentoCampanha.DoesNotExist:
+        return Response({"erro": "Aprimoramento não encontrado."}, status=status.HTTP_404_NOT_FOUND)
+
+    # Aprimoramento não tem `campanha` direta — delega para a Habilidade dona
+    # (que tem), mesmo tratamento do IDOR corrigido em
+    # `Personagem.views.aprimoramento_detalhe`.
+    check_object_permission(request, aprimoramento.habilidade)
+
+    if request.method == "GET":
+        return Response(AprimoramentoCampanhaSerializer(aprimoramento).data)
+
+    if request.method in ("PUT", "PATCH"):
+        serializer = AprimoramentoCampanhaSerializer(
+            aprimoramento, data=request.data, partial=request.method == "PATCH"
+        )
+
+        if serializer.is_valid():
+            serializer.save()
+            return Response(serializer.data)
+
+        return Response(serializer.errors, status=status.HTTP_400_BAD_REQUEST)
+
+    # DELETE — só o mestre, igual aos demais recursos de mundo.
+    erro = _exige_mestre(request, aprimoramento.habilidade.campanha)
+
+    if erro:
+        return erro
+
+    aprimoramento.delete()
+
+    return Response({"mensagem": "Aprimoramento removido com sucesso."}, status=status.HTTP_204_NO_CONTENT)
 
 
 # ---------------------------------------------------------------------------

@@ -98,10 +98,16 @@ class NPC(models.Model):
         ("desaparecido", "Desaparecido"),
     ], blank=True)
 
+    # Campos estruturados curtos — voltam como CharField (não mais parte do
+    # `conteudo` em Markdown) para aparecerem como atributo filtrável/no
+    # card, não enterrados dentro do texto livre.
+    ocupacao = models.CharField(max_length=200, blank=True)
+    status_social = models.CharField(max_length=200, blank=True)
+
     # Campo unificado de conteúdo narrativo, em Markdown puro. Substitui os
     # antigos TextFields narrativos (aparencia, personalidade, familia,
-    # maior_desejo, maior_prazer, peculiaridade, ocupacao, status_social,
-    # segredo, anotacoes) — migrados para cá pela migration de dados 0008.
+    # maior_desejo, maior_prazer, peculiaridade, segredo, anotacoes) —
+    # migrados para cá pela migration de dados 0008.
     conteudo = models.TextField(blank=True)
 
     localizacao = models.ForeignKey('Local', on_delete=models.SET_NULL, null=True, blank=True, related_name="npcs_localizados")
@@ -578,6 +584,7 @@ def modelos_conectaveis():
         NPC, Local, Organizacao, Mapa, Sessao, Missao, Evento,
         Documento, Imagem, Canva, Criatura, Divindade, Raca,
         ItemCampanha, ArmaCampanha, ArmaduraCampanha,
+        TecnicaCampanha, PoderCampanha, HabilidadeCampanha,
         _Personagem,
     ]
 
@@ -927,8 +934,9 @@ class Raca(EntidadeMundo):
     expectativa_vida = models.CharField(max_length=100, blank=True)
     tipo_sociedade = models.CharField(max_length=200, blank=True)
 
-    tendencias = models.TextField(blank=True)
-    tracos_raciais = models.TextField(blank=True)
+    # `tendencias`/`tracos_raciais` (TextField) foram removidos daqui — ver
+    # nota em NPC.conteudo: viraram seções do `conteudo` em Markdown
+    # (migration de dados 0026), como as demais entidades de mundo.
 
     class Meta(EntidadeMundo.Meta):
         verbose_name = "Raça"
@@ -1019,6 +1027,106 @@ class ArmaduraCampanha(EquipamentoCampanha):
     class Meta(EquipamentoCampanha.Meta):
         verbose_name = "Armadura"
         verbose_name_plural = "Armaduras"
+
+
+# ---------------------------------------------------------------------------
+# Técnica/Poder/Habilidade/Aprimoramento exclusivos da campanha
+#
+# Mesmo racional dos equipamentos acima: são entidades de MUNDO (herdam
+# `EntidadeMundo`), não uma cópia por personagem — o mestre cadastra uma vez
+# na campanha (árvore de pastas, busca, conexões) e cada personagem que quer
+# usá-las tem a SUA PRÓPRIA linha em `Personagem.Tecnica/Poder/Habilidade`
+# (criada à mão pelo jogador, olhando o catálogo do Mundo — não há cópia
+# automática, diferente dos equipamentos).
+#
+# `PoderCampanha`/`HabilidadeCampanha` reproduzem a mesma herança
+# multi-tabela de `Personagem.Poder`/`Personagem.Habilidade` (Habilidade É
+# um Poder, com campos extra) — por isso NÃO usam o padrão
+# `EquipamentoCampanha` (que é abstrato e dá a Item/Arma/Armadura tabelas
+# irmãs, sem relação entre si). `status` (FK para `Personagem.Status`, usado
+# pelo botão "Usar" na ficha) não tem equivalente aqui: um Status é de UM
+# personagem, e este é um catálogo compartilhado da campanha — cada cópia na
+# ficha ganha o vínculo de Status própria, na hora em que o jogador a cria.
+# ---------------------------------------------------------------------------
+
+class TecnicaCampanha(EntidadeMundo):
+    """Técnica exclusiva desta campanha — catálogo de referência para as
+    Técnicas que os jogadores cadastram na própria ficha."""
+
+    campanha = models.ForeignKey(Campanha, on_delete=models.CASCADE, related_name="tecnicas_campanha")
+
+    pasta = models.ForeignKey(
+        "Pasta", on_delete=models.SET_NULL, null=True, blank=True, related_name="tecnicas_campanha"
+    )
+
+    midia = CloudinaryField("Mídia", blank=True, null=True)
+    descricao = models.TextField(blank=True)
+    mecanica = models.TextField(blank=True)
+    limitacoes = models.TextField(blank=True)
+
+    class Meta(EntidadeMundo.Meta):
+        verbose_name = "Técnica"
+        verbose_name_plural = "Técnicas"
+
+
+class PoderCampanha(EntidadeMundo):
+    """Poder exclusivo desta campanha — catálogo de referência para os
+    Poderes que os jogadores cadastram na própria ficha."""
+
+    campanha = models.ForeignKey(Campanha, on_delete=models.CASCADE, related_name="poderes_campanha")
+
+    pasta = models.ForeignKey(
+        "Pasta", on_delete=models.SET_NULL, null=True, blank=True, related_name="poderes_campanha"
+    )
+
+    tecnica = models.ForeignKey(
+        TecnicaCampanha, on_delete=models.SET_NULL, related_name="poderes", blank=True, null=True
+    )
+    midia = CloudinaryField("Mídia", blank=True, null=True)
+    tag = models.CharField(max_length=100, blank=True)
+    descricao = models.TextField(blank=True)
+    custo = models.IntegerField(default=0)
+
+    class Meta(EntidadeMundo.Meta):
+        verbose_name = "Poder"
+        verbose_name_plural = "Poderes"
+
+
+class HabilidadeCampanha(PoderCampanha):
+    """Habilidade exclusiva desta campanha — mesma herança multi-tabela de
+    `Personagem.Habilidade`/`Personagem.Poder` (uma Habilidade É um Poder,
+    com estes campos extra)."""
+
+    nivel = models.PositiveIntegerField(default=1)
+    execucao = models.CharField(max_length=30, default="1 Ação", blank=True)
+    alcance = models.CharField(max_length=30, default="Toque", blank=True)
+    alvo_area = models.CharField(max_length=30, default="Um Alvo", blank=True)
+    duracao = models.CharField(max_length=30, default="Instantânea", blank=True)
+    resistencia = models.CharField(max_length=30, default="Nenhuma", blank=True)
+
+    class Meta(PoderCampanha.Meta):
+        verbose_name = "Habilidade"
+        verbose_name_plural = "Habilidades"
+
+
+class AprimoramentoCampanha(models.Model):
+    """
+    Evolução ordenada de uma `HabilidadeCampanha` — mesma estrutura de
+    `Personagem.Aprimoramento`. Propositalmente NÃO é uma `EntidadeMundo`
+    (sem pasta/ícone/visibilidade próprios): pertence à Habilidade, não à
+    campanha diretamente, exatamente como já é em Personagem. É editado e
+    ordenado (`ordem`) dentro do painel da própria Habilidade no Mundo, não
+    como um item separado na árvore.
+    """
+
+    habilidade = models.ForeignKey(HabilidadeCampanha, on_delete=models.CASCADE, related_name="aprimoramentos")
+    ordem = models.PositiveIntegerField(default=1)
+    nome = models.CharField(max_length=100)
+    descricao = models.TextField(blank=True)
+    custo = models.IntegerField(default=0)
+
+    def __str__(self):
+        return f"{self.nome} ({self.habilidade.nome})"
 
 
 # ---------------------------------------------------------------------------

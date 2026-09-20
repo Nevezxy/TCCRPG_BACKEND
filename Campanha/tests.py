@@ -14,6 +14,7 @@ from . import loja
 from .models import (
     Campanha, NPC, Local, Organizacao, Pasta, TipoConexao, Conexao, Imagem,
     ItemCampanha, ArmaCampanha, ArmaduraCampanha,
+    TecnicaCampanha, PoderCampanha, HabilidadeCampanha, AprimoramentoCampanha,
     CategoriaLoja, ProdutoLoja, TransacaoLoja, AnuncioComercioLivre,
 )
 
@@ -332,18 +333,21 @@ class ConteudoMarkdownTests(DuasCampanhasTestCase):
     def test_campos_narrativos_antigos_nao_existem_mais_no_modelo(self):
         """
         Confirma que o consolidamento em `conteudo` de fato substituiu os
-        campos antigos (e não apenas os manteve em paralelo).
+        campos antigos (e não apenas os manteve em paralelo). `ocupacao` e
+        `status_social` NÃO entram aqui: voltaram como CharField estruturado
+        (migration 0025), não como texto dentro do Markdown.
         """
         campos_do_model = {f.name for f in NPC._meta.get_fields()}
 
         for campo_antigo in (
             "aparencia", "personalidade", "familia", "maior_desejo",
-            "maior_prazer", "peculiaridade", "ocupacao", "status_social",
-            "segredo", "anotacoes",
+            "maior_prazer", "peculiaridade", "segredo", "anotacoes",
         ):
             self.assertNotIn(campo_antigo, campos_do_model)
 
         self.assertIn("conteudo", campos_do_model)
+        self.assertIn("ocupacao", campos_do_model)
+        self.assertIn("status_social", campos_do_model)
 
     def test_local_organizacao_tambem_tem_conteudo(self):
         """Mesma consolidação em outras entidades além de NPC."""
@@ -1286,6 +1290,271 @@ class CopiaEquipamentoParaFichaTests(DuasCampanhasTestCase):
         response = self.client.get(f"/personagem/{self.personagem_a.id}/")
 
         self.assertEqual(response.data["campanhas"], [self.campanha_a.id])
+
+
+# ---------------------------------------------------------------------------
+# Técnica/Poder/Habilidade/Aprimoramento exclusivos da campanha
+# ---------------------------------------------------------------------------
+
+class TecnicaPoderHabilidadeCampanhaTests(DuasCampanhasTestCase):
+    """
+    Mesmo racional de `EquipamentosCampanhaTests`: o CRUD em si já é o
+    `_crud_mundo` testado em `EntidadesMundoNovasTests`. O que importa
+    verificar aqui é (1) que `PoderCampanha`/`HabilidadeCampanha` não se
+    misturam na listagem (mesmo cuidado que `Personagem.poder_lista` já
+    tem), e (2) que a ordenação (`ordem`) funciona nos três tipos.
+    """
+
+    def setUp(self):
+        super().setUp()
+        self.tecnica_a = TecnicaCampanha.objects.create(
+            campanha=self.campanha_a, nome="Chama Ancestral", mecanica="Causa 2d6 de dano."
+        )
+        self.poder_a = PoderCampanha.objects.create(
+            campanha=self.campanha_a, nome="Golpe Rápido", custo=1, tecnica=self.tecnica_a
+        )
+        self.habilidade_a = HabilidadeCampanha.objects.create(
+            campanha=self.campanha_a, nome="Fúria do Dragão", custo=3, nivel=2
+        )
+
+    # -- criação e edição ---------------------------------------------------
+
+    def test_mestre_cria_os_tres_tipos(self):
+        self.autentica_como(self.mestre_a)
+
+        tecnica = self.client.post(
+            f"/campanha/{self.campanha_a.id}/tecnicas-campanha/", {"nome": "Vento Cortante"}, format="json"
+        )
+        poder = self.client.post(
+            f"/campanha/{self.campanha_a.id}/poderes-campanha/", {"nome": "Salto", "custo": 2}, format="json"
+        )
+        habilidade = self.client.post(
+            f"/campanha/{self.campanha_a.id}/habilidades-campanha/",
+            {"nome": "Grito de Guerra", "nivel": 1},
+            format="json",
+        )
+
+        self.assertEqual(tecnica.status_code, status.HTTP_201_CREATED, tecnica.data)
+        self.assertEqual(poder.status_code, status.HTTP_201_CREATED, poder.data)
+        self.assertEqual(habilidade.status_code, status.HTTP_201_CREATED, habilidade.data)
+        self.assertEqual(habilidade.data["campanha"], self.campanha_a.id)
+
+    def test_jogador_nao_cria_nem_edita_nem_exclui(self):
+        self.autentica_como(self.jogador_a)
+
+        criar = self.client.post(
+            f"/campanha/{self.campanha_a.id}/habilidades-campanha/", {"nome": "Pirata"}, format="json"
+        )
+        editar = self.client.patch(
+            f"/campanha/habilidades-campanha/{self.habilidade_a.id}/", {"custo": 99}, format="json"
+        )
+        excluir = self.client.delete(f"/campanha/habilidades-campanha/{self.habilidade_a.id}/")
+
+        self.assertEqual(criar.status_code, status.HTTP_403_FORBIDDEN)
+        self.assertEqual(editar.status_code, status.HTTP_403_FORBIDDEN)
+        self.assertEqual(excluir.status_code, status.HTTP_403_FORBIDDEN)
+
+    def test_mestre_edita_habilidade_e_seus_campos_proprios(self):
+        self.autentica_como(self.mestre_a)
+
+        response = self.client.patch(
+            f"/campanha/habilidades-campanha/{self.habilidade_a.id}/",
+            {"nivel": 5, "execucao": "Ação Completa"},
+            format="json",
+        )
+
+        self.assertEqual(response.status_code, status.HTTP_200_OK, response.data)
+        self.assertEqual(response.data["nivel"], 5)
+        self.assertEqual(response.data["execucao"], "Ação Completa")
+
+    # -- Habilidade não "vaza" para a listagem de Poder ---------------------
+
+    def test_habilidade_nao_aparece_na_listagem_de_poderes(self):
+        self.autentica_como(self.jogador_a)
+
+        response = self.client.get(f"/campanha/{self.campanha_a.id}/poderes-campanha/")
+
+        self.assertEqual([p["nome"] for p in response.data], ["Golpe Rápido"])
+
+    def test_habilidade_aparece_na_propria_listagem(self):
+        self.autentica_como(self.jogador_a)
+
+        response = self.client.get(f"/campanha/{self.campanha_a.id}/habilidades-campanha/")
+
+        self.assertEqual([h["nome"] for h in response.data], ["Fúria do Dragão"])
+
+    # -- isolamento e visibilidade -------------------------------------------
+
+    def test_jogador_de_outra_campanha_nao_acessa(self):
+        self.autentica_como(self.jogador_b)
+
+        lista = self.client.get(f"/campanha/{self.campanha_a.id}/tecnicas-campanha/")
+        detalhe = self.client.get(f"/campanha/tecnicas-campanha/{self.tecnica_a.id}/")
+
+        self.assertEqual(lista.status_code, status.HTTP_403_FORBIDDEN)
+        self.assertEqual(detalhe.status_code, status.HTTP_403_FORBIDDEN)
+
+    def test_poder_escondido_nao_aparece_para_jogador_mas_aparece_para_mestre(self):
+        PoderCampanha.objects.create(campanha=self.campanha_a, nome="Segredo do mestre", visivel_para_jogadores=False)
+
+        self.autentica_como(self.jogador_a)
+        do_jogador = self.client.get(f"/campanha/{self.campanha_a.id}/poderes-campanha/")
+        self.autentica_como(self.mestre_a)
+        do_mestre = self.client.get(f"/campanha/{self.campanha_a.id}/poderes-campanha/")
+
+        self.assertNotIn("Segredo do mestre", [p["nome"] for p in do_jogador.data])
+        self.assertIn("Segredo do mestre", [p["nome"] for p in do_mestre.data])
+
+    # -- ordenação (prioridade na aba Mundo) ---------------------------------
+
+    def test_mestre_reordena_tecnicas_via_campo_ordem(self):
+        outra = TecnicaCampanha.objects.create(campanha=self.campanha_a, nome="Sopro Gélido", ordem=1)
+        self.autentica_como(self.mestre_a)
+
+        self.client.patch(f"/campanha/tecnicas-campanha/{self.tecnica_a.id}/", {"ordem": 0}, format="json")
+        self.client.patch(f"/campanha/tecnicas-campanha/{outra.id}/", {"ordem": 1}, format="json")
+
+        response = self.client.get(f"/campanha/{self.campanha_a.id}/tecnicas-campanha/")
+        # `EntidadeMundo.Meta.ordering = ["ordem", "nome"]` — a listagem já
+        # vem na ordem definida pelo campo, sem o cliente precisar ordenar.
+        self.assertEqual([t["nome"] for t in response.data], ["Chama Ancestral", "Sopro Gélido"])
+
+        self.client.patch(f"/campanha/tecnicas-campanha/{self.tecnica_a.id}/", {"ordem": 2}, format="json")
+        response = self.client.get(f"/campanha/{self.campanha_a.id}/tecnicas-campanha/")
+        self.assertEqual([t["nome"] for t in response.data], ["Sopro Gélido", "Chama Ancestral"])
+
+    # -- integração com o resto da aba Mundo --------------------------------
+
+    def test_entram_na_busca_global_da_campanha(self):
+        self.autentica_como(self.jogador_a)
+
+        response = self.client.get(f"/campanha/{self.campanha_a.id}/busca/?q=Fúria")
+
+        tipos = {(r["tipo"], r["nome"]) for r in response.data}
+        self.assertIn(("habilidadecampanha", "Fúria do Dragão"), tipos)
+
+    def test_podem_ser_organizados_em_pasta_da_propria_campanha(self):
+        pasta = Pasta.objects.create(campanha=self.campanha_a, nome="Grimório")
+        pasta_outra = Pasta.objects.create(campanha=self.campanha_b, nome="Alheia")
+        self.autentica_como(self.mestre_a)
+
+        ok = self.client.patch(
+            f"/campanha/tecnicas-campanha/{self.tecnica_a.id}/", {"pasta": pasta.id}, format="json"
+        )
+        recusado = self.client.patch(
+            f"/campanha/tecnicas-campanha/{self.tecnica_a.id}/", {"pasta": pasta_outra.id}, format="json"
+        )
+
+        self.assertEqual(ok.status_code, status.HTTP_200_OK, ok.data)
+        self.assertEqual(ok.data["pasta"], pasta.id)
+        self.assertEqual(recusado.status_code, status.HTTP_400_BAD_REQUEST)
+
+    def test_mestre_duplica_uma_tecnica(self):
+        self.autentica_como(self.mestre_a)
+
+        response = self.client.post(
+            f"/campanha/{self.campanha_a.id}/entidades/duplicar/",
+            {"tipo": "tecnicacampanha", "id": self.tecnica_a.id},
+            format="json",
+        )
+
+        self.assertEqual(response.status_code, status.HTTP_201_CREATED, response.data)
+        self.assertEqual(response.data["nome"], "Chama Ancestral (cópia)")
+
+    def test_podem_participar_de_uma_conexao(self):
+        tipo = TipoConexao.objects.create(nome="Ensinada por")
+        self.autentica_como(self.mestre_a)
+
+        response = self.client.post(
+            f"/campanha/{self.campanha_a.id}/conexoes/",
+            {
+                "entidade1_tipo": "habilidadecampanha",
+                "entidade1_id": self.habilidade_a.id,
+                "entidade2_tipo": "npc",
+                "entidade2_id": self.npc_a1.id,
+                "tipo": tipo.id,
+            },
+            format="json",
+        )
+
+        self.assertEqual(response.status_code, status.HTTP_201_CREATED, response.data)
+
+
+class AprimoramentoCampanhaTests(DuasCampanhasTestCase):
+    """
+    Aprimoramento é aninhado na Habilidade (sem `campanha` própria) — mesmo
+    molde de `Personagem.Aprimoramento`. O que importa testar aqui é que a
+    permissão delega corretamente para a Habilidade dona (mesmo fix de IDOR
+    já aplicado em `Personagem.views.aprimoramento_detalhe`) e que a
+    ordenação funciona.
+    """
+
+    def setUp(self):
+        super().setUp()
+        self.habilidade_a = HabilidadeCampanha.objects.create(campanha=self.campanha_a, nome="Fúria do Dragão")
+        self.habilidade_b = HabilidadeCampanha.objects.create(campanha=self.campanha_b, nome="Escudo Solar")
+        self.aprimoramento_a1 = AprimoramentoCampanha.objects.create(
+            habilidade=self.habilidade_a, nome="Fúria Maior", ordem=1, custo=2
+        )
+
+    def test_mestre_cria_e_lista_aprimoramentos(self):
+        self.autentica_como(self.mestre_a)
+
+        criar = self.client.post(
+            f"/campanha/habilidades-campanha/{self.habilidade_a.id}/aprimoramentos/",
+            {"nome": "Fúria Suprema", "ordem": 2, "custo": 4},
+            format="json",
+        )
+        listar = self.client.get(f"/campanha/habilidades-campanha/{self.habilidade_a.id}/aprimoramentos/")
+
+        self.assertEqual(criar.status_code, status.HTTP_201_CREATED, criar.data)
+        self.assertEqual(criar.data["habilidade"], self.habilidade_a.id)
+        self.assertEqual({a["nome"] for a in listar.data}, {"Fúria Maior", "Fúria Suprema"})
+
+    def test_jogador_de_outra_campanha_nao_acessa(self):
+        self.autentica_como(self.jogador_b)
+
+        listar = self.client.get(f"/campanha/habilidades-campanha/{self.habilidade_a.id}/aprimoramentos/")
+        detalhe = self.client.get(f"/campanha/aprimoramentos-campanha/{self.aprimoramento_a1.id}/")
+
+        self.assertEqual(listar.status_code, status.HTTP_403_FORBIDDEN)
+        self.assertEqual(detalhe.status_code, status.HTTP_403_FORBIDDEN)
+
+    def test_jogador_nao_cria_nem_edita_nem_exclui(self):
+        self.autentica_como(self.jogador_a)
+
+        criar = self.client.post(
+            f"/campanha/habilidades-campanha/{self.habilidade_a.id}/aprimoramentos/",
+            {"nome": "Pirata"},
+            format="json",
+        )
+        editar = self.client.patch(
+            f"/campanha/aprimoramentos-campanha/{self.aprimoramento_a1.id}/", {"custo": 99}, format="json"
+        )
+        excluir = self.client.delete(f"/campanha/aprimoramentos-campanha/{self.aprimoramento_a1.id}/")
+
+        self.assertEqual(criar.status_code, status.HTTP_403_FORBIDDEN)
+        self.assertEqual(editar.status_code, status.HTTP_403_FORBIDDEN)
+        self.assertEqual(excluir.status_code, status.HTTP_403_FORBIDDEN)
+
+    def test_mestre_reordena_via_campo_ordem(self):
+        segundo = AprimoramentoCampanha.objects.create(habilidade=self.habilidade_a, nome="Fúria Suprema", ordem=2)
+        self.autentica_como(self.mestre_a)
+
+        response = self.client.patch(
+            f"/campanha/aprimoramentos-campanha/{segundo.id}/", {"ordem": 0}, format="json"
+        )
+
+        self.assertEqual(response.status_code, status.HTTP_200_OK, response.data)
+        self.assertEqual(response.data["ordem"], 0)
+
+    def test_mestre_exclui_aprimoramento(self):
+        self.autentica_como(self.mestre_a)
+
+        response = self.client.delete(f"/campanha/aprimoramentos-campanha/{self.aprimoramento_a1.id}/")
+
+        self.assertEqual(response.status_code, status.HTTP_204_NO_CONTENT)
+        self.assertFalse(AprimoramentoCampanha.objects.filter(pk=self.aprimoramento_a1.id).exists())
 
 
 # ---------------------------------------------------------------------------
