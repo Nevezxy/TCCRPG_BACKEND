@@ -301,13 +301,13 @@ lacuna. O PostgreSQL recusa a consulta
 (`FOR UPDATE cannot be applied to the nullable side of an outer join`) e o
 SQLite não reclamava. Por isso o CI roda no mesmo banco da produção.
 
-### Cobertura atual (218 casos)
+### Cobertura atual (298 casos)
 
 | App | Casos | O que cobre |
 |---|---|---|
-| `Campanha` | 177 | Pastas, conexões, entidades de mundo, busca, Canva, referências de imagem, múltiplas bibliotecas, equipamentos exclusivos, Loja (categorias, produtos, vitrine, rotação, compra), Comércio Livre |
+| `Campanha` | 242 | Pastas, conexões, entidades de mundo, busca, Canva, referências de imagem, múltiplas bibliotecas, equipamentos exclusivos, Loja (categorias, produtos, vitrine, rotação, compra), Comércio Livre |
 | `Midia` | 22 | Ciclo de vida das imagens: upload, troca, remoção, fila de exclusão e rechecagem de uso antes de apagar |
-| `Personagem` | 11 | Permissões de `Bonus` e `Aprimoramento` — os dois pontos de falha de controle de acesso apontados em `docs/AUDIT.md` |
+| `Personagem` | 26 | Permissões de `Bonus` e `Aprimoramento` — os dois pontos de falha de controle de acesso apontados em `docs/AUDIT.md` —, as preferências do cálculo do Peso Atual (`peso_multiplica_quantidade`, `peso_ajuste_manual`) e o contrato de que Arma/Armadura compartilham a linha de `Item` |
 | `Sistema` | 8 | Imagens da biblioteca e cópia para a ficha, incluindo o arquivo compartilhado entre biblioteca e ficha |
 | `Usuario` | 0 | Sem testes próprios (as permissões são exercitadas indiretamente pelos demais apps) |
 

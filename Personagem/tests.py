@@ -1,9 +1,11 @@
+from decimal import Decimal
+
 from django.contrib.contenttypes.models import ContentType
 from rest_framework import status
 from rest_framework.test import APITestCase
 
 from Usuario.models import Usuario
-from .models import Personagem, Status, Habilidade, Aprimoramento, Bonus
+from .models import Arma, Armadura, Aprimoramento, Bonus, Habilidade, Item, Personagem, Status
 
 
 class DoisUsuariosTestCase(APITestCase):
@@ -172,3 +174,186 @@ class AprimoramentoPermissionTests(DoisUsuariosTestCase):
         response = self.client.get(url)
 
         self.assertEqual(response.status_code, status.HTTP_200_OK)
+
+
+class PesoInventarioConfigTests(DoisUsuariosTestCase):
+    """
+    Preferências do cálculo do Peso Atual (`peso_multiplica_quantidade` e
+    `peso_ajuste_manual`). Antes viviam no navegador; agora são gravadas no
+    Personagem para valerem em qualquer aparelho. O total em si continua sendo
+    calculado pelo frontend e gravado em `peso_atual`.
+    """
+
+    def setUp(self):
+        super().setUp()
+        self.url = f"/personagem/{self.personagem.pk}/"
+        self.autentica_como(self.alice)
+
+    def patch(self, dados):
+        return self.client.patch(self.url, dados, format="json")
+
+    def test_ficha_nova_comeca_com_os_padroes(self):
+        # Ligado (o comportamento de sempre) e ajuste "nunca definido" (None,
+        # que NÃO é o mesmo que 0: é o sinal para o frontend adotar o
+        # `peso_atual` já salvo em vez de sobrescrevê-lo).
+        response = self.client.get(self.url)
+
+        self.assertEqual(response.status_code, status.HTTP_200_OK)
+        self.assertIs(response.data["peso_multiplica_quantidade"], True)
+        self.assertIsNone(response.data["peso_ajuste_manual"])
+
+    def test_patch_grava_a_opcao_de_multiplicar_e_persiste(self):
+        response = self.patch({"peso_multiplica_quantidade": False})
+
+        self.assertEqual(response.status_code, status.HTTP_200_OK)
+        self.assertIs(response.data["peso_multiplica_quantidade"], False)
+        self.personagem.refresh_from_db()
+        self.assertFalse(self.personagem.peso_multiplica_quantidade)
+
+        self.patch({"peso_multiplica_quantidade": True})
+        self.personagem.refresh_from_db()
+        self.assertTrue(self.personagem.peso_multiplica_quantidade)
+
+    def test_patch_grava_o_ajuste_manual_positivo_e_negativo(self):
+        for enviado, esperado in [("2.50", Decimal("2.50")), ("-1.25", Decimal("-1.25")), (3, Decimal("3.00"))]:
+            with self.subTest(enviado=enviado):
+                response = self.patch({"peso_ajuste_manual": enviado})
+
+                self.assertEqual(response.status_code, status.HTTP_200_OK)
+                self.personagem.refresh_from_db()
+                self.assertEqual(self.personagem.peso_ajuste_manual, esperado)
+
+    def test_zero_e_nulo_sao_coisas_diferentes(self):
+        self.patch({"peso_ajuste_manual": "0.00"})
+        self.personagem.refresh_from_db()
+        self.assertEqual(self.personagem.peso_ajuste_manual, Decimal("0.00"))  # "sem ajuste"
+
+        response = self.patch({"peso_ajuste_manual": None})
+        self.assertEqual(response.status_code, status.HTTP_200_OK)
+        self.personagem.refresh_from_db()
+        self.assertIsNone(self.personagem.peso_ajuste_manual)  # "nunca definido"
+
+    def test_gravar_so_a_config_nao_mexe_no_peso(self):
+        self.personagem.peso_atual = Decimal("7.50")
+        self.personagem.peso_maximo = Decimal("15.00")
+        self.personagem.save()
+
+        self.patch({"peso_multiplica_quantidade": False, "peso_ajuste_manual": "1.00"})
+
+        self.personagem.refresh_from_db()
+        self.assertEqual(self.personagem.peso_atual, Decimal("7.50"))
+        self.assertEqual(self.personagem.peso_maximo, Decimal("15.00"))
+
+    def test_gravar_so_o_peso_nao_mexe_na_config(self):
+        self.patch({"peso_multiplica_quantidade": False, "peso_ajuste_manual": "2.00"})
+
+        self.patch({"peso_atual": "9.00"})
+
+        self.personagem.refresh_from_db()
+        self.assertEqual(self.personagem.peso_atual, Decimal("9.00"))
+        self.assertFalse(self.personagem.peso_multiplica_quantidade)
+        self.assertEqual(self.personagem.peso_ajuste_manual, Decimal("2.00"))
+
+    def test_um_unico_patch_grava_peso_e_config_juntos(self):
+        # É assim que o frontend grava: uma fila serializada que funde os
+        # pedidos pendentes num só PATCH.
+        response = self.patch(
+            {"peso_atual": "12.00", "peso_multiplica_quantidade": False, "peso_ajuste_manual": "2.00"}
+        )
+
+        self.assertEqual(response.status_code, status.HTTP_200_OK)
+        self.personagem.refresh_from_db()
+        self.assertEqual(self.personagem.peso_atual, Decimal("12.00"))
+        self.assertFalse(self.personagem.peso_multiplica_quantidade)
+        self.assertEqual(self.personagem.peso_ajuste_manual, Decimal("2.00"))
+
+    def test_rejeita_valores_invalidos_sem_alterar_nada(self):
+        for dados in [
+            {"peso_ajuste_manual": "abc"},
+            {"peso_ajuste_manual": "1.234"},  # mais de 2 casas decimais
+            {"peso_ajuste_manual": "123456789.00"},  # estoura max_digits=10
+            {"peso_multiplica_quantidade": "talvez"},
+        ]:
+            with self.subTest(dados=dados):
+                response = self.patch(dados)
+
+                self.assertEqual(response.status_code, status.HTTP_400_BAD_REQUEST)
+                self.personagem.refresh_from_db()
+                self.assertTrue(self.personagem.peso_multiplica_quantidade)
+                self.assertIsNone(self.personagem.peso_ajuste_manual)
+
+    def test_bob_nao_pode_alterar_a_config_da_ficha_de_alice(self):
+        self.autentica_como(self.bob)
+
+        response = self.patch({"peso_multiplica_quantidade": False, "peso_ajuste_manual": "99.00"})
+
+        self.assertEqual(response.status_code, status.HTTP_403_FORBIDDEN)
+        self.personagem.refresh_from_db()
+        self.assertTrue(self.personagem.peso_multiplica_quantidade)
+        self.assertIsNone(self.personagem.peso_ajuste_manual)
+
+    def test_a_config_e_independente_por_personagem(self):
+        outra = Personagem.objects.create(usuario=self.alice, nome="Outra ficha")
+
+        self.patch({"peso_multiplica_quantidade": False, "peso_ajuste_manual": "5.00"})
+
+        outra.refresh_from_db()
+        self.assertTrue(outra.peso_multiplica_quantidade)
+        self.assertIsNone(outra.peso_ajuste_manual)
+
+
+class ItemArmaArmaduraCompartilhamTests(DoisUsuariosTestCase):
+    """
+    Contrato em que o cálculo do Peso Atual do frontend se apoia: Arma e
+    Armadura herdam de Item (herança multi-tabela), então a MESMA linha — mesmo
+    id, mesmos `peso`/`quantidade` — aparece em `/itens/` e em `/arma/` (ou
+    `/armadura/`), e editar ou remover por qualquer das rotas vale para todas.
+    O frontend tem um cache por rota e os mantém em sincronia com base nisto;
+    se um destes testes quebrar, o peso do inventário volta a errar.
+    """
+
+    def setUp(self):
+        super().setUp()
+        self.autentica_como(self.alice)
+        self.item = Item.objects.create(personagem=self.personagem, nome="Corda", peso=Decimal("1.0"), quantidade=3)
+        self.arma = Arma.objects.create(personagem=self.personagem, nome="Adaga", peso=Decimal("0.5"), quantidade=2)
+        self.armadura = Armadura.objects.create(personagem=self.personagem, nome="Escudo", peso=Decimal("4.0"), quantidade=1)
+
+    def ids(self, rota):
+        response = self.client.get(f"/personagem/{self.personagem.pk}/{rota}/")
+        self.assertEqual(response.status_code, status.HTTP_200_OK)
+        return {linha["id"]: linha for linha in response.data}
+
+    def test_a_lista_de_itens_inclui_as_armas_e_armaduras_com_o_mesmo_peso_e_quantidade(self):
+        itens = self.ids("itens")
+        armas = self.ids("arma")
+        armaduras = self.ids("armadura")
+
+        self.assertEqual(set(itens), {self.item.pk, self.arma.pk, self.armadura.pk})
+        for linha, visao in [(self.arma, armas), (self.armadura, armaduras)]:
+            self.assertEqual(itens[linha.pk]["peso"], visao[linha.pk]["peso"])
+            self.assertEqual(itens[linha.pk]["quantidade"], visao[linha.pk]["quantidade"])
+
+    def test_alterar_a_quantidade_pela_rota_de_itens_vale_para_a_rota_da_arma(self):
+        response = self.client.patch(f"/personagem/itens/{self.arma.pk}/", {"quantidade": 5}, format="json")
+
+        self.assertEqual(response.status_code, status.HTTP_200_OK)
+        self.assertEqual(self.ids("arma")[self.arma.pk]["quantidade"], 5)
+
+    def test_alterar_o_peso_pela_rota_da_arma_vale_para_a_rota_de_itens(self):
+        response = self.client.patch(f"/personagem/armas/{self.arma.pk}/", {"peso": "3.5"}, format="json")
+
+        self.assertEqual(response.status_code, status.HTTP_200_OK)
+        self.assertEqual(Decimal(self.ids("itens")[self.arma.pk]["peso"]), Decimal("3.5"))
+
+    def test_remover_pela_rota_da_arma_remove_da_lista_de_itens(self):
+        response = self.client.delete(f"/personagem/armas/{self.arma.pk}/")
+
+        self.assertEqual(response.status_code, status.HTTP_204_NO_CONTENT)
+        self.assertNotIn(self.arma.pk, self.ids("itens"))
+
+    def test_remover_pela_rota_de_itens_remove_da_lista_de_armaduras(self):
+        response = self.client.delete(f"/personagem/itens/{self.armadura.pk}/")
+
+        self.assertEqual(response.status_code, status.HTTP_204_NO_CONTENT)
+        self.assertNotIn(self.armadura.pk, self.ids("armadura"))

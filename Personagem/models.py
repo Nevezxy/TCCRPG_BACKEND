@@ -55,6 +55,29 @@ class Personagem(Versionado):
     raca = models.CharField(max_length=50, blank=True, null=True)
     peso_atual = models.DecimalField(default=0, max_digits=10, decimal_places=2)
     peso_maximo = models.DecimalField(default=0, max_digits=10, decimal_places=2)
+
+    # Preferências do cálculo do Peso Atual, guardadas AQUI (e não no navegador)
+    # para valerem em qualquer aparelho. O total em si continua sendo calculado
+    # pelo frontend (soma do inventário) e gravado em `peso_atual`; estes dois
+    # campos são o que ele precisa para calcular igual em todo lugar.
+    #
+    # `peso_multiplica_quantidade`: o peso de cada item/arma/armadura é
+    # multiplicado pela sua `quantidade`? Ligado por padrão — é o que a ficha
+    # sempre fez, então as fichas existentes não mudam de comportamento.
+    #
+    # `peso_ajuste_manual`: diferença entre o Peso Atual digitado à mão e a
+    # soma do inventário (ex.: peso de algo que não está cadastrado como item).
+    # É somada ao total a cada recálculo, então uma edição manual acompanha as
+    # mudanças do inventário em vez de ser desfeita. NULL = "nunca definido": a
+    # ficha ainda não foi aberta com este recurso, e o frontend adota o
+    # `peso_atual` já salvo como ponto de partida sem sobrescrevê-lo (0 significa
+    # "sem ajuste", que é outra coisa).
+    #
+    # `db_default` (e não só `default`), como em `Versionado.versao`: se o banco
+    # for compartilhado com uma versão antiga do código, os INSERTs dela seguem
+    # válidos.
+    peso_multiplica_quantidade = models.BooleanField(default=True, db_default=True)
+    peso_ajuste_manual = models.DecimalField(max_digits=10, decimal_places=2, null=True, blank=True, default=None)
     
     classe1 = models.CharField(max_length=40, default='combatente')
     classe2 = models.CharField(max_length=40, default='combatente')
