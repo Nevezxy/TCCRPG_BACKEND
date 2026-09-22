@@ -1405,7 +1405,7 @@ class ParticipanteValoresSerializer(serializers.Serializer):
 
 
 class ParticipanteCombateDadosSerializer(ParticipanteValoresSerializer):
-    tipo = serializers.ChoiceField(choices=["personagem", "npc", "criatura"])
+    tipo = serializers.ChoiceField(choices=["personagem", "npc", "criatura", "avulso"])
     entidade_id = serializers.IntegerField()
     nome = serializers.CharField()
     foto = serializers.CharField(allow_null=True)
@@ -1428,9 +1428,24 @@ class CandidatoCombateSerializer(serializers.Serializer):
 
 
 class EntidadeCombateEntradaSerializer(serializers.Serializer):
-    tipo = serializers.ChoiceField(choices=["personagem", "npc", "criatura"])
-    id = serializers.IntegerField(min_value=1)
+    """
+    `tipo="avulso"` é o "nome rápido" do Escudo: sem NPC/Criatura por trás,
+    então leva `nome` em vez de `id`. Os outros tipos continuam apontando
+    para uma entidade real da campanha.
+    """
+
+    tipo = serializers.ChoiceField(choices=["personagem", "npc", "criatura", "avulso"])
+    id = serializers.IntegerField(min_value=1, required=False)
+    nome = serializers.CharField(max_length=_combate.LIMITE_NOME_AVULSO, trim_whitespace=True, required=False)
     quantidade = serializers.IntegerField(min_value=1, max_value=_combate.LIMITE_QUANTIDADE, default=1)
+
+    def validate(self, attrs):
+        if attrs["tipo"] == "avulso":
+            if not attrs.get("nome"):
+                raise serializers.ValidationError("Informe o nome do participante avulso.")
+        elif "id" not in attrs:
+            raise serializers.ValidationError("Informe o id da entidade.")
+        return attrs
 
 
 class AdicionarParticipantesSerializer(serializers.Serializer):

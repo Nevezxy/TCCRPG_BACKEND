@@ -1464,6 +1464,7 @@ class ParticipanteCombate(Versionado):
         ("personagem", "Personagem"),
         ("npc", "NPC"),
         ("criatura", "Criatura"),
+        ("avulso", "Avulso"),
     ]
 
     combate = models.ForeignKey(Combate, on_delete=models.CASCADE, related_name="participantes")
@@ -1475,6 +1476,10 @@ class ParticipanteCombate(Versionado):
     criatura = models.ForeignKey(
         Criatura, on_delete=models.CASCADE, null=True, blank=True, related_name="participacoes_combate"
     )
+    # Só para tipo="avulso": entra pelo nome digitado no Escudo, sem NPC/Criatura
+    # cadastrado por trás — "aquele bandido aleatório" que não vale a pena
+    # virar entidade da campanha.
+    nome_avulso = models.CharField(max_length=100, null=True, blank=True)
 
     iniciativa = models.IntegerField(default=0)
     # Nulos para personagens: o PV deles é o Status da ficha, que o Escudo já
@@ -1496,6 +1501,13 @@ class ParticipanteCombate(Versionado):
                     Q(tipo="personagem", personagem__isnull=False, npc__isnull=True, criatura__isnull=True)
                     | Q(tipo="npc", personagem__isnull=True, npc__isnull=False, criatura__isnull=True)
                     | Q(tipo="criatura", personagem__isnull=True, npc__isnull=True, criatura__isnull=False)
+                    | Q(
+                        tipo="avulso",
+                        personagem__isnull=True,
+                        npc__isnull=True,
+                        criatura__isnull=True,
+                        nome_avulso__isnull=False,
+                    )
                 ),
                 name="participante_combate_uma_entidade",
             )
@@ -1507,5 +1519,5 @@ class ParticipanteCombate(Versionado):
         return self.personagem or self.npc or self.criatura
 
     def __str__(self):
-        entidade = self.entidade
-        return f"{entidade} ({self.iniciativa})" if entidade else f"Participante {self.pk}"
+        nome = self.entidade or self.nome_avulso
+        return f"{nome} ({self.iniciativa})" if nome else f"Participante {self.pk}"

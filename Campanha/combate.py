@@ -46,6 +46,8 @@ LIMITE_PARTICIPANTES = 200
 LIMITE_QUANTIDADE = 20
 LIMITE_INICIATIVA = 9999
 LIMITE_PV = 1_000_000
+# Mesmo max_length de `ParticipanteCombate.nome_avulso`.
+LIMITE_NOME_AVULSO = 100
 
 MODELO_POR_TIPO = {"personagem": Personagem, "npc": NPC, "criatura": Criatura}
 
@@ -128,15 +130,28 @@ def _identidade(tipo, entidade, ajustes):
     }
 
 
+def _identidade_avulso(participante):
+    # Sem entidade por trás: o próprio id do participante identifica a
+    # linha (nunca se repete, então nunca cria um rótulo "#1"/"#2" à toa).
+    return {
+        "tipo": "avulso",
+        "entidade_id": participante.pk,
+        "nome": participante.nome_avulso,
+        "foto": None,
+        "foto_ajuste": None,
+    }
+
+
 def participantes_dados(participantes):
     """Linhas completas (identidade + valores), na ordem recebida."""
     por_tipo = {}
     for p in participantes:
-        por_tipo.setdefault(p.tipo, []).append(p.entidade)
+        if p.tipo != "avulso":
+            por_tipo.setdefault(p.tipo, []).append(p.entidade)
     ajustes = _ajustes_das_fotos(por_tipo)
     return [
         {
-            **_identidade(p.tipo, p.entidade, ajustes),
+            **(_identidade_avulso(p) if p.tipo == "avulso" else _identidade(p.tipo, p.entidade, ajustes)),
             **{campo: getattr(p, campo) for campo in CAMPOS_VALORES},
         }
         for p in participantes
@@ -153,6 +168,7 @@ def _participantes_com_entidade(filtro):
             *CAMPOS_VALORES,
             "tipo",
             "combate",
+            "nome_avulso",
             "personagem__id", "personagem__nome", "personagem__foto",
             "npc__id", "npc__nome", "npc__foto",
             "criatura__id", "criatura__nome", "criatura__foto",
@@ -295,13 +311,14 @@ def _novo_participante(combate_id, tipo, entidade):
     )
 
 
-def adicionar(combate, entidades=None, todos_personagens=False):
+def adicionar(combate, entidades=None, avulsos=None, todos_personagens=False):
     """
     Adiciona `entidades` (`[(tipo, entidade, quantidade)]`, repetições
-    permitidas) ou, com `todos_personagens`, os personagens da campanha que
-    ainda não estão no combate. A trava no combate serializa dois "adicionar
-    todos" simultâneos (duas abas) — sem ela ambos veriam o combate vazio e
-    duplicariam todo mundo.
+    permitidas), `avulsos` (`[(nome, quantidade)]` — sem entidade por trás,
+    só o nome digitado no Escudo) ou, com `todos_personagens`, os
+    personagens da campanha que ainda não estão no combate. A trava no
+    combate serializa dois "adicionar todos" simultâneos (duas abas) — sem
+    ela ambos veriam o combate vazio e duplicariam todo mundo.
     """
     with transaction.atomic():
         combate = _travar(combate.pk)
@@ -314,7 +331,12 @@ def adicionar(combate, entidades=None, todos_personagens=False):
         else:
             novos = [
                 _novo_participante(combate.pk, tipo, entidade)
-                for tipo, entidade, quantidade in entidades
+                for tipo, entidade, quantidade in (entidades or [])
+                for _ in range(quantidade)
+            ]
+            novos += [
+                ParticipanteCombate(combate_id=combate.pk, tipo="avulso", nome_avulso=nome)
+                for nome, quantidade in (avulsos or [])
                 for _ in range(quantidade)
             ]
         if not novos:

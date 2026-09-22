@@ -347,7 +347,7 @@ class ParticipanteCombateInline(admin.TabularInline):
     model = ParticipanteCombate
     fk_name = "combate"
     extra = 0
-    fields = ("tipo", "personagem", "npc", "criatura", "iniciativa", "pv_atual", "pv_max", "versao")
+    fields = ("tipo", "personagem", "npc", "criatura", "nome_avulso", "iniciativa", "pv_atual", "pv_max", "versao")
     readonly_fields = ("versao",)
     raw_id_fields = ("personagem", "npc", "criatura")
 
