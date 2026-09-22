@@ -27,6 +27,7 @@ from channels.layers import get_channel_layer
 from django.contrib.contenttypes.models import ContentType
 from django.db.models import Q
 
+from Personagem import calculos
 from Personagem.models import Atributo, Bonus, Defesa, Status
 from Personagem.serializers import AtributoSerializer, DefesaSerializer, StatusSerializer
 
@@ -71,6 +72,11 @@ def bonus_dados(bonus, tipo):
         "valor": bonus.valor,
         "ativo": bonus.ativo,
         "somente_teste": bonus.somente_teste,
+        # O prazo do botão "Usar". O Escudo não soma bônus (os totais já vêm
+        # prontos em `valor_final`), mas exibe quais estão no ar — e um bônus
+        # vencido que ainda não passou pelo varredor tem `ativo=True` no
+        # banco. Com o prazo em mãos, o cliente não o mostra aceso.
+        "expira_em": bonus.expira_em.isoformat() if bonus.expira_em else None,
         "versao": bonus.versao,
     }
 
@@ -141,12 +147,18 @@ def montar_snapshot(campanha, personagem_ids=None):
         item["id"]: {**item, "status": [], "atributos": [], "defesas": [], "bonus": []}
         for item in personagens_resumo(personagens)
     }
+    # UM contexto de cálculo para o snapshot inteiro. Os serializers agora
+    # publicam `valor_final`, e sem um contexto compartilhado cada linha
+    # pediria os próprios bônus — o número de consultas voltaria a crescer
+    # com o número de personagens, que é exatamente o que este snapshot
+    # existe para evitar.
+    contexto = {"calculo": calculos.ContextoCalculo(ids)}
     for chave, serializer_cls, objetos in (
         ("status", StatusSerializer, status),
         ("atributos", AtributoSerializer, atributos),
         ("defesas", DefesaSerializer, defesas),
     ):
-        for dados in serializer_cls(objetos, many=True).data:
+        for dados in serializer_cls(objetos, many=True, context=contexto).data:
             por_personagem[dados["personagem"]][chave].append(dados)
     for b in bonus:
         tipo = tipos[b.content_type_id]
@@ -192,3 +204,58 @@ def publicar(campanha_ids, evento):
             enviar(nome_grupo(campanha_id), {"type": "escudo.evento", "evento": evento})
         except Exception:  # noqa: BLE001 — ver docstring
             logger.exception("Falha ao publicar evento do Escudo (campanha %s)", campanha_id)
+
+
+# ---------------------------------------------------------------------------
+# Linhas recalculadas
+# ---------------------------------------------------------------------------
+
+def linhas_calculadas(personagem_id):
+    """
+    Status, Atributos e Defesas de um personagem já com `valor_final`,
+    serializados com UM contexto de cálculo compartilhado.
+
+    Existe porque `valor_final` é derivado: mudar UM bônus muda o total do
+    alvo, e mudar UM atributo muda o total de toda Defesa/Status que se
+    apoia nele — sem que a `versao` dessas linhas mude. Publicar só a linha
+    que foi gravada deixaria o Escudo exibindo totais velhos até a próxima
+    reconexão.
+
+    São ~5 consultas para a ficha inteira, e só rodam quando a gravação de
+    fato cascateia (bônus, atributo, nível) — ver `Campanha/signals.py`.
+    """
+    from Personagem.models import Atributo as _Atributo
+    from Personagem.models import Defesa as _Defesa
+    from Personagem.models import Status as _Status
+
+    contexto = {"calculo": calculos.ContextoCalculo([personagem_id])}
+    return [
+        (entidade, serializer_cls(objeto, context=contexto).data)
+        for entidade, serializer_cls, queryset in (
+            ("status", StatusSerializer, _Status.objects.filter(personagem_id=personagem_id)),
+            ("atributo", AtributoSerializer, _Atributo.objects.filter(personagem_id=personagem_id)),
+            ("defesa", DefesaSerializer, _Defesa.objects.filter(personagem_id=personagem_id)),
+        )
+        for objeto in queryset
+    ]
+
+
+def linha_calculada(modelo, pk):
+    """
+    Uma linha só, relida do banco e serializada com `valor_final`.
+
+    Relida (e não serializada na hora do `save()`) porque o total depende de
+    OUTRAS linhas — os bônus do alvo, o atributo vinculado —, e ler tudo
+    dentro do `post_save` custaria consultas a cada tecla que o jogador
+    digita na ficha. Fazendo isto no `on_commit`, a gravação em si continua
+    sendo um único UPDATE.
+
+    Devolve None se a linha já não existe (foi excluída antes do commit): o
+    `post_delete` dela já terá enfileirado o evento de remoção.
+    """
+    objeto = modelo.objects.filter(pk=pk).first()
+    if objeto is None:
+        return None
+    entidade = {Status: "status", Atributo: "atributo", Defesa: "defesa"}[modelo]
+    contexto = {"calculo": calculos.ContextoCalculo()}
+    return ENTIDADES_SERIALIZER[entidade](objeto, context=contexto).data
