@@ -30,7 +30,10 @@ from django.db import transaction
 from django.db.models import Q
 from django.db.models.signals import m2m_changed, post_delete, post_init, post_save, pre_delete
 
+from django.contrib.contenttypes.models import ContentType
+
 from Midia.services import public_id_de
+from Personagem import calculos
 from Personagem.models import Atributo, Bonus, Defesa, Personagem, Status
 
 from . import combate, escudo
@@ -42,7 +45,20 @@ _CAMPO_COMBATE = {Personagem: "personagem", NPC: "npc", Criatura: "criatura"}
 # Campos que aparecem no Escudo. Para Status/Atributo/Defesa é a linha toda
 # (menos a própria versão); para o Personagem, só o que o card mostra.
 _CAMPOS_PERSONAGEM = ("nome", "nivel", "classe1", "usuario_id", "foto")
-_CAMPOS_BONUS = ("content_type_id", "object_id", "valor", "ativo", "somente_teste")
+_CAMPOS_BONUS = (
+    "content_type_id",
+    "object_id",
+    "valor",
+    "ativo",
+    "somente_teste",
+    # Sem estes, uma renovação de prazo pelo botão "Usar" (que só mexe em
+    # `expira_em`) ou a troca da entidade de origem não mudavam a assinatura
+    # e o Escudo não recebia evento nenhum.
+    "expira_em",
+    "tipo_origem",
+    "origem_content_type_id",
+    "origem_object_id",
+)
 
 
 @lru_cache(maxsize=None)
@@ -107,6 +123,47 @@ def _publicar_linha(sender, pk, personagem_id):
     _publicar_entidade(personagem_id, {"tipo": "upsert", "entidade": _ENTIDADE[sender], "dados": dados})
 
 
+def _agendar_ficha(personagem_id):
+    """
+    Agenda UMA republicação da ficha recalculada por personagem, por
+    transação — mesmo que a requisição altere vários bônus.
+
+    Sem isto, ligar cinco bônus de uma vez (o que o botão "Usar" faz) mandava
+    a ficha inteira cinco vezes pelo WebSocket, e cada mensagem redesenha o
+    card de todo mundo na mesa.
+
+    A deduplicação olha a FILA de callbacks da transação corrente, e não um
+    registro próprio: o Django esvazia essa fila tanto no commit quanto no
+    rollback, então a janela do dedupe é exatamente a transação. Um registro
+    guardado à parte ficaria com o id preso para sempre quando a transação
+    fosse desfeita, e toda publicação seguinte daquele personagem sumiria em
+    silêncio — foi o que os testes do Escudo pegaram.
+    """
+    if personagem_id is None:
+        return
+
+    for entrada in transaction.get_connection().run_on_commit:
+        funcao = next((parte for parte in entrada if callable(parte)), None)
+        if funcao is not None and getattr(funcao, "_escudo_ficha", None) == personagem_id:
+            return
+
+    def publicar():
+        # Marca-se como GASTO antes de publicar: a fila do `on_commit` só é
+        # esvaziada no fim da transação, e sem isto um callback que já rodou
+        # continuaria casando com a varredura acima e engoliria o próximo
+        # agendamento do mesmo personagem na mesma transação.
+        publicar._escudo_ficha = None
+        _publicar_ficha(personagem_id)
+
+    publicar._escudo_ficha = personagem_id
+    # Registrado direto, e não via `_ao_commit`: ele embrulha a função num
+    # `functools.partial`, que não repassa atributos — a marca acima ficaria
+    # na função de dentro e a varredura acima nunca a encontraria. O
+    # `robust=True` é o mesmo de `_ao_commit`, pela mesma razão: o commit já
+    # aconteceu, e uma falha de publicação não pode virar um 500.
+    transaction.on_commit(publicar, robust=True)
+
+
 def _publicar_ficha(personagem_id):
     """
     Republica TODAS as linhas calculadas do personagem.
@@ -127,7 +184,16 @@ def _publicar_ficha(personagem_id):
     for entidade, dados in escudo.linhas_calculadas(personagem_id):
         escudo.publicar(
             campanhas,
-            {"tipo": "upsert", "entidade": entidade, "personagem": personagem_id, "dados": dados},
+            {
+                "tipo": "upsert",
+                "entidade": entidade,
+                "personagem": personagem_id,
+                "dados": dados,
+                # A `versao` destas linhas não mudou (elas não foram
+                # gravadas), então sem esta marca o cliente as descartaria
+                # pela regra de ordenação. Ver `escudo.linhas_calculadas`.
+                "recalculo": True,
+            },
         )
 
 
@@ -144,7 +210,7 @@ def _entidade_salva(sender, instance, created, raw=False, **kwargs):
     if sender is Atributo:
         # Atributo cascateia: Status, Defesas e Perícias que o referenciam
         # mudam de total junto, e a própria linha dele vai no lote.
-        _ao_commit(_publicar_ficha, instance.personagem_id)
+        _agendar_ficha(instance.personagem_id)
     else:
         _ao_commit(_publicar_linha, sender, instance.pk, instance.personagem_id)
 
@@ -190,7 +256,7 @@ def _bonus_salvo(sender, instance, created, raw=False, **kwargs):
     _ao_commit(_publicar_bonus, tipo, instance.object_id, evento)
     # O bônus mudou: o total do alvo (e de quem depende dele) mudou junto,
     # sem que a `versao` dessas linhas subisse. Ver `_publicar_ficha`.
-    _ao_commit(_publicar_ficha_do_alvo, tipo, instance.object_id)
+    _agendar_ficha(_personagem_do_alvo(tipo, instance.object_id))
 
 
 def _bonus_excluido(sender, instance, **kwargs):
@@ -200,19 +266,23 @@ def _bonus_excluido(sender, instance, **kwargs):
     evento = {"tipo": "remover", "entidade": "bonus", "id": instance.pk, "versao": instance.__dict__.get("versao")}
     object_id = instance.__dict__.get("object_id")
     _ao_commit(_publicar_bonus, tipo, object_id, evento)
-    _ao_commit(_publicar_ficha_do_alvo, tipo, object_id)
+    _agendar_ficha(_personagem_do_alvo(tipo, object_id))
 
 
-def _publicar_ficha_do_alvo(tipo, object_id):
-    """Ponte bônus -> personagem: o Bonus só conhece o alvo genérico."""
-    personagem_id = (
+def _personagem_do_alvo(tipo, object_id):
+    """
+    Ponte bônus -> personagem: o Bonus só conhece o alvo genérico.
+
+    Resolvido AQUI (no save), e não no commit, porque é o que permite ao
+    `_agendar_ficha` deduplicar: ligar cinco bônus da mesma ficha agenda uma
+    publicação só. A consulta é por chave primária.
+    """
+    return (
         escudo.MODELOS_ALVO_BONUS[tipo]
         .objects.filter(pk=object_id)
         .values_list("personagem_id", flat=True)
         .first()
     )
-    if personagem_id is not None:
-        _publicar_ficha(personagem_id)
 
 
 # ---------------------------------------------------------------------------
@@ -238,7 +308,7 @@ def _personagem_salvo(sender, instance, created, raw=False, **kwargs):
     # O Nível multiplica a contribuição do atributo em todo Status com
     # `atributo_nivel` marcado: subir de nível muda esses totais sem mexer
     # na linha do Status. Ver `_publicar_ficha`.
-    _ao_commit(_publicar_ficha, instance.pk)
+    _agendar_ficha(instance.pk)
 
 
 def _personagem_sera_excluido(sender, instance, **kwargs):
@@ -332,6 +402,47 @@ def _campanha_sera_excluida(sender, instance, **kwargs):
     _ao_commit(escudo.publicar, [instance.pk], {"tipo": "campanha_removida"})
 
 
+# ---------------------------------------------------------------------------
+# Entidades que FORNECEM bônus (Perícia, Item/Arma/Armadura, Técnica,
+# Poder/Habilidade, Aprimoramento)
+# ---------------------------------------------------------------------------
+
+def _origem_de_bonus_salva(sender, instance, raw=False, **kwargs):
+    """
+    Nenhuma destas entidades aparece no Escudo — mas o `valor_final` delas
+    pode ser a ORIGEM do bônus de um Status/Atributo/Defesa que aparece.
+    Mudar uma Técnica de 2 para 7 muda o total da Defesa que a referencia,
+    sem tocar na linha da Defesa; sem este sinal, o Escudo seguia com o
+    número velho até a reconexão.
+
+    A consulta EXISTS antes de agendar é o que impede isto de virar spam: a
+    esmagadora maioria dos itens de um inventário não é origem de bônus
+    nenhum, e para esses não sai mensagem alguma.
+    """
+    if raw:
+        return
+
+    personagem_id = calculos.personagem_de(instance)
+    if personagem_id is None:
+        return
+
+    if not _e_origem_de_algum_bonus(instance):
+        return
+
+    _agendar_ficha(personagem_id)
+
+
+def _e_origem_de_algum_bonus(instance):
+    content_type = ContentType.objects.get_for_model(
+        calculos.modelo_base(instance._meta.model_name)
+    )
+    return Bonus.objects.filter(
+        origem_content_type=content_type,
+        origem_object_id=instance.pk,
+        tipo_origem=Bonus.TIPO_ENTIDADE,
+    ).exists()
+
+
 def conectar():
     for model in (Personagem, Status, Atributo, Defesa, Bonus):
         post_init.connect(_ao_carregar, sender=model, dispatch_uid=f"escudo-init-{model._meta.label_lower}")
@@ -340,6 +451,16 @@ def conectar():
         uid = model._meta.label_lower
         post_save.connect(_entidade_salva, sender=model, dispatch_uid=f"escudo-save-{uid}")
         post_delete.connect(_entidade_excluida, sender=model, dispatch_uid=f"escudo-delete-{uid}")
+
+    # Models BASE da cadeia de herança: uma Arma salva dispara o sinal de
+    # `Item` também, e as referências são gravadas sob a base.
+    for tipo in calculos.TIPOS_BASE:
+        modelo = calculos.MODELOS_ALVO[tipo]
+        if modelo in _ENTIDADE:
+            continue  # Status/Atributo/Defesa já republicam a ficha por outro caminho
+        uid = modelo._meta.label_lower
+        post_save.connect(_origem_de_bonus_salva, sender=modelo, dispatch_uid=f"escudo-origem-save-{uid}")
+        post_delete.connect(_origem_de_bonus_salva, sender=modelo, dispatch_uid=f"escudo-origem-delete-{uid}")
 
     post_save.connect(_bonus_salvo, sender=Bonus, dispatch_uid="escudo-save-bonus")
     post_delete.connect(_bonus_excluido, sender=Bonus, dispatch_uid="escudo-delete-bonus")

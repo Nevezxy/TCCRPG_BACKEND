@@ -60,6 +60,14 @@ class EscudoBase(APITestCase):
         )
         self.ca = Defesa.objects.create(personagem=self.personagem, nome="Classe de Armadura", valor=14)
 
+        # As linhas criadas acima enfileiram callbacks de `on_commit` que,
+        # num TestCase, NUNCA rodam — a transação é desfeita no fim. Numa
+        # requisição de verdade o commit os executa e esvazia a fila; aqui
+        # esvaziamos à mão, para cada teste partir do mesmo estado. Sem isto,
+        # a deduplicação de `_agendar_ficha` enxerga um agendamento fantasma
+        # da própria setUp e engole os eventos do teste.
+        connection.run_on_commit.clear()
+
         self.camada = get_channel_layer()
         self.canal = async_to_sync(self.camada.new_channel)()
         async_to_sync(self.camada.group_add)(nome_grupo(self.campanha.pk), self.canal)
@@ -273,6 +281,85 @@ class EventosTests(EscudoBase):
             e for e in eventos if e["entidade"] == "defesa" and e["dados"]["id"] == self.ca.pk
         )
         self.assertEqual(defesa["dados"]["valor_final"], self.ca.valor)
+
+    def test_recalculo_vem_marcado_para_o_cliente_nao_descartar(self):
+        """
+        A `versao` de uma linha recalculada NÃO muda — ela não foi gravada; o
+        que mudou foi um total derivado dela. Sem a marca `recalculo`, o
+        cliente aplicaria a regra normal ("só aceito versão maior") e
+        descartaria o evento em silêncio, deixando o Escudo com o número
+        velho até a reconexão. Era o que acontecia.
+        """
+        versao_antes = self.ca.versao
+        with self.captureOnCommitCallbacks(execute=True):
+            _bonus(self.ca, 4)
+
+        defesa = next(
+            e for e in self.receber_todos()
+            if e["entidade"] == "defesa" and e["dados"]["id"] == self.ca.pk
+        )
+        self.assertTrue(defesa.get("recalculo"))
+        self.assertEqual(defesa["dados"]["versao"], versao_antes)
+        self.assertEqual(defesa["dados"]["valor_final"], self.ca.valor + 4)
+
+    def test_mudar_a_origem_do_bonus_republica_o_alvo(self):
+        """
+        Uma Técnica não aparece no Escudo, mas o `valor_final` dela pode ser
+        a origem do bônus de uma Defesa que aparece. Antes, mexer na Técnica
+        não gerava evento nenhum.
+        """
+        from Personagem.models import Tecnica
+
+        tecnica = Tecnica.objects.create(personagem=self.personagem, nome="Foco", valor_final=2)
+        # Dentro do bloco de captura porque criar o bônus também agenda uma
+        # republicação: deixá-la pendente bloquearia (pela deduplicação) a
+        # que o save da Técnica deve disparar logo abaixo.
+        with self.captureOnCommitCallbacks(execute=True):
+            Bonus.objects.create(
+                content_type=ContentType.objects.get_for_model(Defesa),
+                object_id=self.ca.pk,
+                nome="Foco",
+                tipo_origem=Bonus.TIPO_ENTIDADE,
+                origem_content_type=ContentType.objects.get_for_model(Tecnica),
+                origem_object_id=tecnica.pk,
+            )
+        self.receber_todos()
+
+        with self.captureOnCommitCallbacks(execute=True):
+            tecnica.valor_final = 7
+            tecnica.save()
+
+        defesa = next(
+            e for e in self.receber_todos()
+            if e["entidade"] == "defesa" and e["dados"]["id"] == self.ca.pk
+        )
+        self.assertEqual(defesa["dados"]["valor_final"], self.ca.valor + 7)
+
+    def test_entidade_que_nao_e_origem_de_nada_nao_gera_evento(self):
+        """A trava contra spam: a maioria dos itens de um inventário não é
+        origem de bônus nenhum, e para esses não sai mensagem alguma."""
+        from Personagem.models import Item
+
+        item = Item.objects.create(personagem=self.personagem, nome="Corda", valor_final=3)
+        self.receber_todos()
+
+        with self.captureOnCommitCallbacks(execute=True):
+            item.valor_final = 9
+            item.save()
+
+        self.assertIsNone(self.receber())
+
+    def test_varios_bonus_de_uma_vez_publicam_a_ficha_uma_vez_so(self):
+        """O botão "Usar" liga vários bônus numa transação só. Sem a
+        deduplicação, a ficha inteira ia pelo WebSocket uma vez por bônus."""
+        with self.captureOnCommitCallbacks(execute=True):
+            _bonus(self.ca, 1)
+            _bonus(self.vida, 2)
+            _bonus(self.atributo, 3)
+
+        eventos = self.receber_todos()
+        defesas = [e for e in eventos if e["entidade"] == "defesa" and e["dados"]["id"] == self.ca.pk]
+        self.assertEqual(len(defesas), 1, [e["entidade"] for e in eventos])
 
     def test_exclusao_de_status(self):
         pk = self.vida.pk

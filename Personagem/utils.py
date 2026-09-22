@@ -82,7 +82,27 @@ def criar_dados_iniciais_personagem(personagem, modelo):
             valor_max=10,
             valor_atual=10,
         )
-        
+
+        # Proficiência: em D&D ela entra como bônus em várias Perícias e
+        # Defesas ao mesmo tempo, e sobe com o nível. Por isso nasce como
+        # STATUS (e não como número solto em cada linha): assim existe um
+        # lugar só para editá-la, e cada Perícia/Defesa que a usa a recebe
+        # por referência, via bônus de origem — ver `valor_final` e o
+        # atalho "Adicionar proficiência" nos modais do frontend.
+        #
+        # Sem barra: é um valor, não um recurso que se gasta.
+        Status.objects.create(
+            personagem=personagem,
+            nome="Proficiência",
+            barra=False,
+            cor="#FFC000",
+            valor_max=6,
+            valor_atual=2,
+            valor_temp=0,
+            sub_status=False,
+            atributo_nivel=False,
+        )
+
         #DEFESAS
         Defesa.objects.create(
             personagem=personagem,

@@ -532,3 +532,64 @@ class ListagensTests(FichaBase):
         self.assertEqual(dados["valor_final"], 10)
         self.assertEqual((dados["atributo_total"], dados["bonus_total"]), (7, 1))
         self.assertFalse(dados["valor_final_incompleto"])
+
+
+class ModeloDndTests(APITestCase):
+    """
+    A ficha de D&D nasce com o Status **Proficiência**, que em D&D entra como
+    bônus em várias Perícias e Defesas ao mesmo tempo e sobe com o nível.
+    Nasce como Status (e não como número solto em cada linha) para existir um
+    lugar só de editá-la; quem a usa a recebe por referência, via bônus de
+    origem — ver o atalho nos modais de Defesa/Perícia no frontend.
+    """
+
+    def setUp(self):
+        self.usuario = Usuario.objects.create_user(username="dm", password="SenhaForte123!")
+        self.client.force_authenticate(user=self.usuario)
+
+    def criar_ficha(self, modelo):
+        resposta = self.client.post(f"/personagem/?modelo={modelo}", {"nome": "Herói"}, format="json")
+        self.assertEqual(resposta.status_code, http.HTTP_201_CREATED, resposta.data)
+        return Personagem.objects.get(pk=resposta.data["id"])
+
+    def test_dnd_nasce_com_proficiencia(self):
+        personagem = self.criar_ficha("dnd")
+
+        proficiencia = Status.objects.get(personagem=personagem, nome="Proficiência")
+        self.assertEqual(
+            (
+                proficiencia.valor_atual,
+                proficiencia.valor_max,
+                proficiencia.barra,
+                proficiencia.cor,
+                proficiencia.valor_temp,
+                proficiencia.sub_status,
+                proficiencia.atributo_nivel,
+            ),
+            (2, 6, False, "#FFC000", 0, False, False),
+        )
+
+    def test_proficiencia_serve_de_origem_de_bonus(self):
+        """O que o atalho do frontend vai fazer: um bônus por entidade numa
+        Perícia, apontando para a Proficiência."""
+        personagem = self.criar_ficha("dnd")
+        proficiencia = Status.objects.get(personagem=personagem, nome="Proficiência")
+        pericia = Pericia.objects.filter(personagem=personagem).first()
+
+        resposta = self.client.post(
+            f"/personagem/pericia/{pericia.pk}/bonus/",
+            {
+                "nome": "Proficiência",
+                "tipo_origem": "entidade",
+                "origem_tipo": "status",
+                "origem_id": proficiencia.pk,
+            },
+            format="json",
+        )
+
+        self.assertEqual(resposta.status_code, http.HTTP_201_CREATED, resposta.data)
+        self.assertEqual(resposta.data["valor_efetivo"], 2)
+
+    def test_modelo_tcc_nao_ganha_proficiencia(self):
+        personagem = self.criar_ficha("tcc")
+        self.assertFalse(Status.objects.filter(personagem=personagem, nome="Proficiência").exists())
