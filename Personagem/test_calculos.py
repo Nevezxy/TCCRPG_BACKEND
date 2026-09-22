@@ -356,6 +356,26 @@ class UsarTests(FichaBase):
         self.assertFalse(vencido.ativo)
         self.assertIsNone(vencido.expira_em)
 
+    def test_abrir_o_painel_de_bonus_e_barato_quando_nada_venceu(self):
+        """
+        O painel de bônus abre a cada card expandido da ficha. A varredura de
+        expirados ali é por ALVO (uma consulta indexada), não pela ficha
+        inteira — que precisaria levantar os ids das dez tabelas só para, no
+        caso comum, não atualizar linha nenhuma.
+        """
+        defesa = Defesa.objects.create(personagem=self.personagem, nome="CA", valor=10)
+        bonus_manual(defesa, 2)
+        url = f"/personagem/defesa/{defesa.pk}/bonus/"
+
+        self.client.get(url)  # aquece o cache de ContentType
+        with CaptureQueriesContext(connection) as consultas:
+            self.client.get(url)
+
+        # Sem um teto explícito o teste não protege nada; 12 dá folga para as
+        # consultas de permissão e ainda pega uma volta da varredura por
+        # personagem (que sozinha traz oito consultas de id).
+        self.assertLess(len(consultas), 12, [q["sql"][:80] for q in consultas])
+
 
 class CalculosFichaEndpointTests(FichaBase):
 

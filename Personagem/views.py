@@ -1628,10 +1628,12 @@ def bonus_lista(request, tipo, object_id):
     # outro na aba Combate (ver `Personagem/calculos.py` e a migration 0026).
     content_type = ContentType.objects.get_for_model(calculos.modelo_base(tipo.lower()))
 
-    # Antes de responder, derruba os bônus cujo prazo de 1 hora (botão "Usar")
-    # já venceu. O cálculo por si só já os ignora; isto é o que PERSISTE o
-    # estado e faz a mudança chegar ao Escudo pelos signals normais.
-    calculos.expirar_bonus(calculos.personagem_de(alvo))
+    # Antes de responder, derruba os bônus DESTE alvo cujo prazo de 1 hora
+    # (botão "Usar") já venceu. O cálculo por si só já os ignora; isto é o
+    # que PERSISTE o estado e faz a mudança chegar ao Escudo pelos signals
+    # normais. Só deste alvo porque este painel abre a cada card expandido —
+    # a varredura da ficha inteira fica para `/calculos/` e para o "usar".
+    calculos.expirar_bonus_do_alvo(alvo)
 
     if request.method == "GET":
 

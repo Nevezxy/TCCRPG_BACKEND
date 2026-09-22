@@ -185,6 +185,14 @@ def expirar_bonus(personagem_id=None, agora=None):
     agora = agora or timezone.now()
     qs = Bonus.objects.filter(ativo=True, expira_em__isnull=False, expira_em__lte=agora)
 
+    # Atalho barato: uma consulta no índice de `expira_em` antes de levantar
+    # os ids das dez tabelas da ficha. O caso comum é não haver NADA vencido
+    # (bônus com prazo só existem na hora seguinte a um "Usar"), e sem isto
+    # abrir o painel de bônus de um card custaria oito consultas de id para
+    # depois não atualizar linha nenhuma.
+    if personagem_id is not None and not qs.exists():
+        return 0
+
     if personagem_id is not None:
         alvos = Q(pk__in=[])
         for tipo in TIPOS_BASE:
@@ -196,6 +204,26 @@ def expirar_bonus(personagem_id=None, agora=None):
         qs = qs.filter(alvos)
 
     return qs.update(ativo=False, expira_em=None, versao=F("versao") + 1)
+
+
+def expirar_bonus_do_alvo(alvo, agora=None):
+    """
+    Como `expirar_bonus`, mas só para os bônus de UM alvo.
+
+    É o que `bonus_lista` usa: ali já sabemos exatamente qual é o alvo, e
+    uma única consulta indexada por (content_type, object_id) resolve — a
+    versão por personagem precisaria levantar os ids das dez tabelas da
+    ficha para montar o filtro, e esse painel abre a cada card expandido.
+    """
+    agora = agora or timezone.now()
+    tipo, object_id = chave_de(alvo)
+    return Bonus.objects.filter(
+        content_type=ContentType.objects.get_for_model(MODELOS_ALVO[tipo]),
+        object_id=object_id,
+        ativo=True,
+        expira_em__isnull=False,
+        expira_em__lte=agora,
+    ).update(ativo=False, expira_em=None, versao=F("versao") + 1)
 
 
 def ids_do_personagem(modelo, personagem_id):
