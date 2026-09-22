@@ -167,9 +167,14 @@ def status_lista(request, personagem_id):
 
         status_personagem = Status.objects.filter(personagem=personagem).order_by("ordem")
 
+        # UM contexto de cálculo para a resposta inteira. Os serializers
+        # publicam `valor_final`, e sem isto cada linha pediria os próprios
+        # bônus e o próprio atributo — o mesmo N+1 que o frontend tinha com
+        # um `useBonusTotal` por card, só que do lado do servidor.
         serializer = StatusSerializer(
             status_personagem,
-            many=True
+            many=True,
+            context={"calculo": calculos.ContextoCalculo([personagem.pk])}
         )
 
         return Response(serializer.data)
@@ -313,7 +318,10 @@ def atributo_lista(request, personagem_id):
 
         atributos = Atributo.objects.filter(personagem=personagem).order_by("id")
 
-        serializer = AtributoSerializer(atributos, many=True)
+        # Ver a nota em `status_lista`: um contexto de cálculo por resposta.
+        serializer = AtributoSerializer(
+            atributos, many=True, context={"calculo": calculos.ContextoCalculo([personagem.pk])}
+        )
 
         return Response(serializer.data)
 
@@ -435,7 +443,10 @@ def defesa_lista(request, personagem_id):
 
         defesas = Defesa.objects.filter(personagem=personagem).order_by("ordem", "id")
 
-        serializer = DefesaSerializer(defesas, many=True)
+        # Ver a nota em `status_lista`: um contexto de cálculo por resposta.
+        serializer = DefesaSerializer(
+            defesas, many=True, context={"calculo": calculos.ContextoCalculo([personagem.pk])}
+        )
 
         return Response(serializer.data)
 
@@ -563,7 +574,11 @@ def pericia_lista(request, personagem_id):
 
         pericias = Pericia.objects.filter(personagem=personagem).order_by("nome")
 
-        serializer = PericiaSerializer(pericias, many=True)
+        # Ver a nota em `status_lista`: um contexto de cálculo por resposta.
+        # É a listagem que mais sofria: uma ficha de D&D tem 21 perícias.
+        serializer = PericiaSerializer(
+            pericias, many=True, context={"calculo": calculos.ContextoCalculo([personagem.pk])}
+        )
 
         return Response(serializer.data)
 

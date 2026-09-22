@@ -141,6 +141,13 @@ class FormulasTests(FichaBase):
         armadura.save()
         self.assertEqual(Item.objects.get(pk=armadura.pk).valor_final, 9)
 
+        # `update_fields` também: `defesa` é coluna da Armadura e
+        # `valor_final` é do Item (herança multi-tabela), e o save precisa
+        # gravar as duas tabelas. É o caminho que um PATCH parcial usa.
+        armadura.defesa = 12
+        armadura.save(update_fields=["defesa"])
+        self.assertEqual(Item.objects.get(pk=armadura.pk).valor_final, 12)
+
 
 class BonusPorEntidadeTests(FichaBase):
 
@@ -397,3 +404,49 @@ class CalculosFichaEndpointTests(FichaBase):
             self.client.get(url)
 
         self.assertEqual(len(muitas), len(poucas))
+
+
+class ListagensTests(FichaBase):
+    """
+    As listagens normais da ficha (`/pericias/`, `/status/`, ...) também
+    publicam `valor_final`. Sem um contexto de cálculo compartilhado por
+    resposta, cada linha pediria os próprios bônus e o próprio atributo — o
+    mesmo N+1 que o frontend tinha com um `useBonusTotal` por card, só que do
+    lado do servidor.
+    """
+
+    def test_listagem_de_pericias_nao_cresce_em_consultas(self):
+        url = f"/personagem/{self.personagem.pk}/pericias/"
+
+        for i in range(5):
+            Pericia.objects.create(
+                personagem=self.personagem, nome=f"P{i}", treinamento=1,
+                atributo=self.forca, somar_atributo=True,
+            )
+        with CaptureQueriesContext(connection) as poucas:
+            self.client.get(url)
+
+        for i in range(25):
+            Pericia.objects.create(
+                personagem=self.personagem, nome=f"Q{i}", treinamento=1,
+                atributo=self.forca, somar_atributo=True,
+            )
+        with CaptureQueriesContext(connection) as muitas:
+            resposta = self.client.get(url)
+
+        self.assertEqual(len(resposta.data), 30)
+        self.assertEqual(len(muitas), len(poucas))
+
+    def test_listagem_publica_o_total_e_a_decomposicao(self):
+        pericia = Pericia.objects.create(
+            personagem=self.personagem, nome="Atletismo", treinamento=2,
+            atributo=self.forca, somar_atributo=True,
+        )
+        bonus_manual(pericia, 1)
+        bonus_manual(self.forca, 3)
+
+        [dados] = self.client.get(f"/personagem/{self.personagem.pk}/pericias/").data
+        # treinamento 2 + Força final (4 + 3) + bônus 1
+        self.assertEqual(dados["valor_final"], 10)
+        self.assertEqual((dados["atributo_total"], dados["bonus_total"]), (7, 1))
+        self.assertFalse(dados["valor_final_incompleto"])
