@@ -1785,8 +1785,15 @@ def bonus_detalhe(request, pk):
 def usar_entidade(request, tipo, object_id):
     """
     Botão "Usar" de Técnica/Poder/Habilidade/Aprimoramento, do lado dos
-    BÔNUS: liga os bônus desligados da entidade e marca a hora em que eles
-    caem (1 hora depois).
+    BÔNUS: liga os bônus desligados RELACIONADOS à entidade e marca a hora em
+    que eles caem (1 hora depois).
+
+    "Relacionados" nos dois sentidos (ver `calculos.bonus_relacionados`): os
+    que a entidade recebe E os que ela fornece a outras. O segundo é o caso
+    comum aqui — uma Habilidade que concede +2 de Força não tem bônus algum
+    em cima de si; o bônus mora no Atributo, com a Habilidade como origem. A
+    resposta traz os bônus de TODOS os alvos afetados, e por isso o cliente
+    precisa agrupá-los por alvo antes de publicar em cache.
 
     Não mexe no Status vinculado. O desconto do `custo` continua sendo um
     PATCH no Status, como sempre foi (`src/utils/usarStatus.ts`) — juntar as
@@ -1820,14 +1827,8 @@ def usar_entidade(request, tipo, object_id):
     calculos.expirar_bonus(personagem_id)
     calculos.ativar_bonus_por_uso(alvo)
 
-    content_type = ContentType.objects.get_for_model(calculos.modelo_base(tipo.lower()))
-    bonus = Bonus.objects.filter(
-        content_type=content_type,
-        object_id=object_id
-    ).order_by("id")
-
     serializer = BonusSerializer(
-        bonus,
+        calculos.bonus_relacionados(alvo),
         many=True,
         context={"calculo": calculos.ContextoCalculo([personagem_id])}
     )
