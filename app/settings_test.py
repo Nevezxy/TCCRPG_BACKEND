@@ -47,6 +47,30 @@ if _TEST_DATABASE_URL:
 else:
     DATABASES = {"default": {"ENGINE": "django.db.backends.sqlite3", "NAME": ":memory:"}}
 
+# --- Throttling -------------------------------------------------------------
+# DESLIGADO na suíte. O `UserRateThrottle` (300/min em produção) conta as
+# requisições num cache de processo que NÃO é desfeito pela transação de cada
+# teste — a suíte inteira divide uma cota só. Passando de 300 requisições
+# autenticadas, um teste QUALQUER que rode depois recebe 429, e a falha
+# aparece longe da causa: o teste de imagens da biblioteca do app Sistema
+# quebrava com `KeyError: 0` porque `resposta.data` era
+# `{"detail": "Request was throttled"}` em vez da lista esperada.
+#
+# Isso deixava a suíte a UMA requisição de quebrar: qualquer teste novo podia
+# derrubar um teste alheio que ninguém tinha tocado. `Campanha/test_combate.py`
+# já contornava com um `cache.clear()` no tearDown da própria classe; aqui o
+# problema some para todo mundo.
+#
+# Anular as taxas não deixa nada sem cobertura: nenhum teste exercita o
+# throttle, e a configuração de produção (`app/settings.py`) continua intacta.
+# As CHAVES precisam continuar existindo (com valor None): o DRF procura a
+# taxa pelo `scope` da classe, e uma chave ausente é ImproperlyConfigured,
+# não "sem limite".
+REST_FRAMEWORK = {  # noqa: F405
+    **REST_FRAMEWORK,  # noqa: F405
+    "DEFAULT_THROTTLE_RATES": {"anon": None, "user": None},
+}
+
 # --- Serviços externos ------------------------------------------------------
 # Sem Redis: o channel layer em memória basta, e os testes do Escudo não
 # dependem de broker.
