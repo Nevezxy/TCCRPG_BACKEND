@@ -572,7 +572,7 @@ def pericia_lista(request, personagem_id):
 
     if request.method == "GET":
 
-        pericias = Pericia.objects.filter(personagem=personagem).order_by("nome")
+        pericias = Pericia.objects.filter(personagem=personagem).order_by("ordem", "nome")
 
         # Ver a nota em `status_lista`: um contexto de cálculo por resposta.
         # É a listagem que mais sofria: uma ficha de D&D tem 21 perícias.
@@ -1897,7 +1897,7 @@ def calculos_ficha(request, personagem_id):
             many=True, context=ctx
         ).data,
         "pericias": PericiaSerializer(
-            Pericia.objects.filter(personagem=personagem).order_by("nome"),
+            Pericia.objects.filter(personagem=personagem).order_by("ordem", "nome"),
             many=True, context=ctx
         ).data,
     }
