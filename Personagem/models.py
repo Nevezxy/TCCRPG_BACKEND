@@ -169,6 +169,19 @@ class Item(models.Model):
     quantidade = models.PositiveIntegerField(default=1)
     consumivel = models.BooleanField(default=False)
 
+    # Valor final do item, DIGITADO pelo jogador — não é calculado a partir de
+    # nada. Existe porque `valor` já é o PREÇO em dinheiro (usado pela Loja e
+    # pelo Comércio Livre) e não tem relação com o número que o item vale em
+    # mesa; são duas coisas distintas que precisavam de duas colunas.
+    #
+    # Fica em `Item` (e não em três models) porque `Arma` e `Armadura` herdam
+    # dele por herança multi-tabela: uma coluna cobre os três. Na `Armadura`
+    # ele é mantido igual a `defesa` pelo `save()` dela — ver o comentário lá.
+    #
+    # É este o número que outra entidade recebe ao usar um item como origem de
+    # bônus (ver `Bonus.tipo_origem`).
+    valor_final = models.IntegerField(default=0, db_default=0)
+
     # Está à venda no Comércio Livre da campanha? Fica em `Item` (e não nos
     # três models) porque `Arma` e `Armadura` herdam dele por herança
     # multi-tabela — um campo e uma migration cobrem os três itens da ficha.
@@ -198,6 +211,27 @@ class Arma(Item):
 class Armadura(Item):
     defesa = models.IntegerField(default=0, blank=True)
     modificacoes = models.ManyToManyField(Modificacao, blank=True, related_name='armaduras')
+
+    def save(self, *args, **kwargs):
+        """
+        `defesa` continua sendo O campo da armadura — é o que o jogador edita,
+        o que a Loja copia (`Campanha/loja.py`) e o que `ArmaduraCampanha`/
+        `ArmaduraSistema` também têm. Aqui só o espelhamos na coluna
+        `valor_final` herdada de `Item`.
+
+        Por que espelhar em vez de expor `defesa` como alias no serializer: a
+        MESMA linha aparece na aba Inventário (como Item) e na aba Combate
+        (como Armadura) — herança multi-tabela, ver `api/recursosIrmaos.ts` no
+        frontend. Um alias só no `ArmaduraSerializer` faria a visão de Item
+        devolver 0 para a mesma armadura, e o valor mudaria de tab para tab.
+        Com o espelho, `valor_final` é o mesmo número em qualquer visão e em
+        qualquer bônus que use esta armadura como origem.
+        """
+        self.valor_final = self.defesa
+        update_fields = kwargs.get("update_fields")
+        if update_fields is not None:
+            kwargs["update_fields"] = {*update_fields, "valor_final"}
+        super().save(*args, **kwargs)
     
 class Tecnica(models.Model):
     personagem = models.ForeignKey(Personagem, on_delete=models.CASCADE, related_name='tecnicas')
@@ -206,6 +240,10 @@ class Tecnica(models.Model):
     descricao = models.TextField(blank=True)
     mecanica = models.TextField(blank=True)
     limitacoes = models.TextField(blank=True)
+    # Digitado pelo jogador (ver `Item.valor_final`): Técnica não tem número
+    # que o sistema saiba derivar. Serve para a Técnica poder ser origem de
+    # bônus de outra entidade.
+    valor_final = models.IntegerField(default=0, db_default=0)
     
     def __str__(self):
         return f"{self.nome} ({self.personagem.nome})"
@@ -219,6 +257,9 @@ class Poder(models.Model):
     descricao = models.TextField(blank=True)
     status = models.ForeignKey(Status, on_delete=models.SET_NULL, related_name='poderes', blank=True, null=True)
     custo = models.IntegerField(default=0)
+    # Digitado pelo jogador (ver `Item.valor_final`). Fica em `Poder` e
+    # `Habilidade` o herda — uma coluna para os dois, como em `Item`.
+    valor_final = models.IntegerField(default=0, db_default=0)
     
     def __str__(self):
         return f"{self.nome} ({self.personagem.nome})"
@@ -237,8 +278,47 @@ class Aprimoramento(models.Model):
     nome = models.CharField(max_length=100)
     descricao = models.TextField(blank=True)
     custo = models.IntegerField(default=0)
+    # Digitado pelo jogador (ver `Item.valor_final`).
+    valor_final = models.IntegerField(default=0, db_default=0)
+
+    @property
+    def personagem(self):
+        """
+        Único model da ficha sem FK direta para `Personagem` — o vínculo passa
+        pela Habilidade. Esta propriedade é o que faz `check_object_permission`
+        (`Usuario/permissions.py`) funcionar aqui: ele procura `obj.personagem`
+        e, sem ela, caía no `return False` final e negava o acesso até para o
+        dono. Era o que impedia o Aprimoramento de aceitar bônus, apesar de o
+        frontend já declarar `BONUS_TIPO.aprimoramento`.
+        """
+        return self.habilidade.personagem
     
 class Bonus(Versionado):
+    """
+    Modificador anexado a qualquer entidade da ficha (Status, Atributo,
+    Defesa, Perícia, Item/Arma/Armadura, Técnica, Poder, Habilidade,
+    Aprimoramento) através de uma GenericForeignKey.
+
+    Duas origens possíveis (`tipo_origem`):
+
+      - `manual`: o número vem de `valor`, digitado pelo jogador.
+      - `entidade`: o número é o `valor_final` de OUTRA entidade da mesma
+        ficha, resolvido na hora da leitura (`Personagem/calculos.py`). É uma
+        REFERÊNCIA, não uma cópia: se a Força subir, todo bônus que a usa como
+        origem sobe junto, sem ninguém reeditar nada.
+
+    `expira_em` é o que sustenta a regra de "Usar" de Técnica/Poder/
+    Habilidade/Aprimoramento: o uso liga os bônus da entidade e marca a hora
+    em que eles devem cair. Não há Celery nem cron neste projeto, então a
+    expiração é PREGUIÇOSA — o cálculo já ignora um bônus vencido, e
+    `calculos.expirar_bonus()` grava o `ativo=False` quando alguém olha para
+    a lista de bônus. Ler nunca depende de o varredor ter rodado.
+    """
+
+    TIPO_MANUAL = "manual"
+    TIPO_ENTIDADE = "entidade"
+    TIPOS_ORIGEM = [(TIPO_MANUAL, "Manual"), (TIPO_ENTIDADE, "Entidade")]
+
     content_type = models.ForeignKey(ContentType, on_delete=models.CASCADE)
     object_id = models.PositiveIntegerField()
     alvo = GenericForeignKey("content_type", "object_id")
@@ -246,3 +326,39 @@ class Bonus(Versionado):
     valor = models.IntegerField(default=0)
     ativo = models.BooleanField(default=True)
     somente_teste = models.BooleanField(default=False)
+
+    tipo_origem = models.CharField(
+        max_length=10, choices=TIPOS_ORIGEM, default=TIPO_MANUAL, db_default=TIPO_MANUAL
+    )
+
+    # Segunda GenericForeignKey: a entidade de onde o valor vem quando
+    # `tipo_origem == "entidade"`. Genérica (e não uma FK por tipo) porque a
+    # origem pode ser qualquer um dos dez models da ficha — dez colunas
+    # nuláveis seriam a alternativa.
+    #
+    # Como GenericForeignKey NÃO tem `on_delete`, apagar a entidade de origem
+    # deixaria um bônus apontando para um id que não existe mais. Quem limpa é
+    # o signal `Personagem/signals.py::_origem_removida`, que reproduz o mesmo
+    # `SET_NULL` que `Defesa.atributo` já usa: o bônus vira manual com valor 0
+    # em vez de sumir (o jogador vê o que sobrou e decide).
+    origem_content_type = models.ForeignKey(
+        ContentType,
+        on_delete=models.CASCADE,
+        related_name="bonus_como_origem",
+        blank=True,
+        null=True,
+    )
+    origem_object_id = models.PositiveIntegerField(blank=True, null=True)
+    origem = GenericForeignKey("origem_content_type", "origem_object_id")
+
+    expira_em = models.DateTimeField(blank=True, null=True, default=None)
+
+    class Meta:
+        indexes = [
+            # A consulta de todo cálculo: "os bônus deste alvo".
+            models.Index(fields=["content_type", "object_id"]),
+            # Usado pela limpeza quando a entidade de origem é excluída.
+            models.Index(fields=["origem_content_type", "origem_object_id"]),
+            # Usado pelo varredor de expirados.
+            models.Index(fields=["expira_em"]),
+        ]

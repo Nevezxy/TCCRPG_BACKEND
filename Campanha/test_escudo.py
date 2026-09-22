@@ -243,14 +243,36 @@ class EventosTests(EscudoBase):
         with self.captureOnCommitCallbacks(execute=True):
             _bonus(arma, 3)
             bonus = _bonus(self.ca, 2)
-        [evento] = self.receber_todos()
-        self.assertEqual((evento["entidade"], evento["dados"]["tipo"]), ("bonus", "defesa"))
+
+        eventos = self.receber_todos()
+
+        # Só o bônus da Defesa gera evento de BÔNUS — o da Arma é de um alvo
+        # que o Escudo não exibe.
+        de_bonus = [e for e in eventos if e["entidade"] == "bonus"]
+        self.assertEqual(
+            [(e["entidade"], e["dados"]["tipo"]) for e in de_bonus],
+            [("bonus", "defesa")],
+        )
+
+        # E o alvo é republicado com o total já recalculado: `valor_final` é
+        # derivado, então a linha da Defesa muda sem a `versao` dela subir —
+        # sem este reenvio o Escudo ficaria com o total velho até reconectar.
+        defesa = next(
+            e for e in eventos if e["entidade"] == "defesa" and e["dados"]["id"] == self.ca.pk
+        )
+        self.assertEqual(defesa["dados"]["valor_final"], self.ca.valor + 2)
 
         pk = bonus.pk
         with self.captureOnCommitCallbacks(execute=True):
             bonus.delete()
-        evento = self.receber()
-        self.assertEqual((evento["tipo"], evento["entidade"], evento["id"]), ("remover", "bonus", pk))
+        eventos = self.receber_todos()
+        remocao = next(e for e in eventos if e["entidade"] == "bonus")
+        self.assertEqual((remocao["tipo"], remocao["id"]), ("remover", pk))
+        # Removido o bônus, o total do alvo volta ao que era.
+        defesa = next(
+            e for e in eventos if e["entidade"] == "defesa" and e["dados"]["id"] == self.ca.pk
+        )
+        self.assertEqual(defesa["dados"]["valor_final"], self.ca.valor)
 
     def test_exclusao_de_status(self):
         pk = self.vida.pk

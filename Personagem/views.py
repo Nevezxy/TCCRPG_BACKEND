@@ -1,8 +1,11 @@
 from rest_framework.decorators import api_view
 from rest_framework.response import Response
 from rest_framework import status
-from drf_spectacular.utils import extend_schema
+from drf_spectacular.utils import extend_schema, inline_serializer
 
+from django.db.models import Q
+
+from Personagem import calculos
 from Personagem.utils import criar_dados_iniciais_personagem
 
 from .models import *
@@ -164,9 +167,14 @@ def status_lista(request, personagem_id):
 
         status_personagem = Status.objects.filter(personagem=personagem).order_by("ordem")
 
+        # UM contexto de cálculo para a resposta inteira. Os serializers
+        # publicam `valor_final`, e sem isto cada linha pediria os próprios
+        # bônus e o próprio atributo — o mesmo N+1 que o frontend tinha com
+        # um `useBonusTotal` por card, só que do lado do servidor.
         serializer = StatusSerializer(
             status_personagem,
-            many=True
+            many=True,
+            context={"calculo": calculos.ContextoCalculo([personagem.pk])}
         )
 
         return Response(serializer.data)
@@ -310,7 +318,10 @@ def atributo_lista(request, personagem_id):
 
         atributos = Atributo.objects.filter(personagem=personagem).order_by("id")
 
-        serializer = AtributoSerializer(atributos, many=True)
+        # Ver a nota em `status_lista`: um contexto de cálculo por resposta.
+        serializer = AtributoSerializer(
+            atributos, many=True, context={"calculo": calculos.ContextoCalculo([personagem.pk])}
+        )
 
         return Response(serializer.data)
 
@@ -432,7 +443,10 @@ def defesa_lista(request, personagem_id):
 
         defesas = Defesa.objects.filter(personagem=personagem).order_by("ordem", "id")
 
-        serializer = DefesaSerializer(defesas, many=True)
+        # Ver a nota em `status_lista`: um contexto de cálculo por resposta.
+        serializer = DefesaSerializer(
+            defesas, many=True, context={"calculo": calculos.ContextoCalculo([personagem.pk])}
+        )
 
         return Response(serializer.data)
 
@@ -560,7 +574,11 @@ def pericia_lista(request, personagem_id):
 
         pericias = Pericia.objects.filter(personagem=personagem).order_by("nome")
 
-        serializer = PericiaSerializer(pericias, many=True)
+        # Ver a nota em `status_lista`: um contexto de cálculo por resposta.
+        # É a listagem que mais sofria: uma ficha de D&D tem 21 perícias.
+        serializer = PericiaSerializer(
+            pericias, many=True, context={"calculo": calculos.ContextoCalculo([personagem.pk])}
+        )
 
         return Response(serializer.data)
 
@@ -1556,18 +1574,12 @@ def aprimoramento_detalhe(request, pk):
             status=status.HTTP_204_NO_CONTENT
         )
         
-MODELOS_BONUS = {
-    "status": Status,
-    "atributo": Atributo,
-    "defesa": Defesa,
-    "pericia": Pericia,
-    "item": Item,
-    "arma": Arma,
-    "armadura": Armadura,
-    "tecnica": Tecnica,
-    "poder": Poder,
-    "habilidade": Habilidade,
-}
+# Mantido como nome público (o Escudo e os testes importam daqui), mas a
+# lista em si passou a morar em `Personagem/calculos.py`, junto das regras de
+# herança que decidem sob qual model cada bônus é gravado. `aprimoramento`
+# entrou agora: o frontend já declarava `BONUS_TIPO.aprimoramento` desde
+# sempre, mas o tipo faltava aqui e todo POST voltava 400.
+MODELOS_BONUS = calculos.MODELOS_ALVO
 
 @extend_schema(
     methods=["GET"],
@@ -1610,14 +1622,25 @@ def bonus_lista(request, tipo, object_id):
     # mestre/jogador da campanha em modo leitura).
     check_object_permission(request, alvo)
 
-    content_type = ContentType.objects.get_for_model(modelo)
+    # HERANÇA MULTI-TABELA: `Arma`/`Armadura` são a mesma linha que `Item`, e
+    # `Habilidade` a mesma que `Poder`. Gravar o bônus sob o model BASE é o
+    # que impede a mesma arma de ter um conjunto de bônus na aba Inventário e
+    # outro na aba Combate (ver `Personagem/calculos.py` e a migration 0026).
+    content_type = ContentType.objects.get_for_model(calculos.modelo_base(tipo.lower()))
+
+    # Antes de responder, derruba os bônus DESTE alvo cujo prazo de 1 hora
+    # (botão "Usar") já venceu. O cálculo por si só já os ignora; isto é o
+    # que PERSISTE o estado e faz a mudança chegar ao Escudo pelos signals
+    # normais. Só deste alvo porque este painel abre a cada card expandido —
+    # a varredura da ficha inteira fica para `/calculos/` e para o "usar".
+    calculos.expirar_bonus_do_alvo(alvo)
 
     if request.method == "GET":
 
         bonus = Bonus.objects.filter(
             content_type=content_type,
             object_id=object_id
-        )
+        ).order_by("id")
 
         serializer = BonusSerializer(bonus, many=True)
 
@@ -1625,7 +1648,10 @@ def bonus_lista(request, tipo, object_id):
 
     elif request.method == "POST":
 
-        serializer = BonusSerializer(data=request.data)
+        # `alvo` no contexto: na CRIAÇÃO o bônus ainda não conhece o próprio
+        # alvo (a view o passa só no `.save()`), e a validação de ciclo e de
+        # "mesmo personagem" precisa saber quem vai receber o bônus.
+        serializer = BonusSerializer(data=request.data, context={"alvo": alvo})
 
         if serializer.is_valid():
 
@@ -1747,3 +1773,149 @@ def bonus_detalhe(request, pk):
             {"mensagem": "Bônus removido com sucesso."},
             status=status.HTTP_204_NO_CONTENT
         )
+
+@extend_schema(
+    methods=["POST"],
+    operation_id="usar_entidade",
+    request=None,
+    responses=BonusSerializer(many=True),
+)
+@api_view(["POST"])
+@permission_classes([IsAuthenticated])
+def usar_entidade(request, tipo, object_id):
+    """
+    Botão "Usar" de Técnica/Poder/Habilidade/Aprimoramento, do lado dos
+    BÔNUS: liga os bônus desligados da entidade e marca a hora em que eles
+    caem (1 hora depois).
+
+    Não mexe no Status vinculado. O desconto do `custo` continua sendo um
+    PATCH no Status, como sempre foi (`src/utils/usarStatus.ts`) — juntar as
+    duas coisas aqui mudaria o comportamento de todo Poder/Habilidade que já
+    existe, e o desconto precisa valer mesmo para quem não tem bônus nenhum.
+
+    Bônus que já estavam ligados SEM prazo são deixados em paz: são os
+    permanentes do jogador, e usar uma técnica não pode transformá-los em
+    bônus de uma hora. Ver `calculos.ativar_bonus_por_uso`.
+    """
+    modelo = MODELOS_BONUS.get(tipo.lower())
+
+    if modelo is None:
+        return Response(
+            {"erro": "Tipo de alvo inválido."},
+            status=status.HTTP_400_BAD_REQUEST
+        )
+
+    try:
+        alvo = modelo.objects.get(pk=object_id)
+
+    except modelo.DoesNotExist:
+        return Response(
+            {"erro": "Objeto não encontrado."},
+            status=status.HTTP_404_NOT_FOUND
+        )
+
+    check_object_permission(request, alvo)
+
+    personagem_id = calculos.personagem_de(alvo)
+    calculos.expirar_bonus(personagem_id)
+    calculos.ativar_bonus_por_uso(alvo)
+
+    content_type = ContentType.objects.get_for_model(calculos.modelo_base(tipo.lower()))
+    bonus = Bonus.objects.filter(
+        content_type=content_type,
+        object_id=object_id
+    ).order_by("id")
+
+    serializer = BonusSerializer(
+        bonus,
+        many=True,
+        context={"calculo": calculos.ContextoCalculo([personagem_id])}
+    )
+
+    return Response(serializer.data)
+
+
+@extend_schema(
+    methods=["GET"],
+    operation_id="calculos_ficha",
+    responses=inline_serializer(
+        name="CalculosFicha",
+        fields={
+            "atributos": AtributoSerializer(many=True),
+            "status": StatusSerializer(many=True),
+            "defesas": DefesaSerializer(many=True),
+            "pericias": PericiaSerializer(many=True),
+            "bonus": BonusSerializer(many=True),
+        },
+    ),
+)
+@api_view(["GET"])
+@permission_classes([IsAuthenticated])
+def calculos_ficha(request, personagem_id):
+    """
+    Todos os valores finais da ficha numa requisição só.
+
+    Antes, cada card montava o seu próprio `useBonusTotal` e pedia os bônus
+    daquela entidade: uma ficha de D&D (6 atributos + 3 status + 9 defesas +
+    21 perícias) disparava ~39 requisições só para exibir os totais. Aqui é
+    um número FIXO de consultas, qualquer que seja o tamanho da ficha — o
+    mesmo remédio que `Campanha/escudo.py::montar_snapshot` aplicou ao
+    Escudo.
+
+    Devolve também os bônus com `valor_efetivo` já resolvido, que é o que o
+    frontend usa para PREVER o novo total enquanto o PATCH não volta (ver
+    `src/utils/calculoFicha.ts`).
+    """
+    try:
+        personagem = Personagem.objects.get(pk=personagem_id)
+
+    except Personagem.DoesNotExist:
+        return Response(
+            {"erro": "Personagem não encontrado."},
+            status=status.HTTP_404_NOT_FOUND
+        )
+
+    check_object_permission(request, personagem)
+
+    calculos.expirar_bonus(personagem_id)
+
+    contexto = calculos.ContextoCalculo([personagem_id])
+    ctx = {"calculo": contexto}
+
+    dados = {
+        "atributos": AtributoSerializer(
+            Atributo.objects.filter(personagem=personagem).order_by("id"),
+            many=True, context=ctx
+        ).data,
+        "status": StatusSerializer(
+            Status.objects.filter(personagem=personagem).order_by("ordem", "id"),
+            many=True, context=ctx
+        ).data,
+        "defesas": DefesaSerializer(
+            Defesa.objects.filter(personagem=personagem).order_by("ordem", "id"),
+            many=True, context=ctx
+        ).data,
+        "pericias": PericiaSerializer(
+            Pericia.objects.filter(personagem=personagem).order_by("nome"),
+            many=True, context=ctx
+        ).data,
+    }
+
+    # Todos os bônus da ficha, de qualquer tipo de alvo — é o que permite ao
+    # frontend recalcular sozinho sem uma requisição por card.
+    filtro = Q(pk__in=[])
+    for tipo in calculos.TIPOS_BASE:
+        modelo = calculos.MODELOS_ALVO[tipo]
+        ids = calculos.ids_do_personagem(modelo, personagem_id)
+        if ids:
+            filtro |= Q(
+                content_type=ContentType.objects.get_for_model(modelo),
+                object_id__in=ids
+            )
+
+    dados["bonus"] = BonusSerializer(
+        Bonus.objects.filter(filtro).order_by("id"),
+        many=True, context=ctx
+    ).data
+
+    return Response(dados)

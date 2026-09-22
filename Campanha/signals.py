@@ -99,17 +99,54 @@ def _publicar_entidade(personagem_id, evento):
     escudo.publicar(escudo.campanhas_do_personagem(personagem_id), {**evento, "personagem": personagem_id})
 
 
+def _publicar_linha(sender, pk, personagem_id):
+    """Relê a linha e publica com o `valor_final` já calculado."""
+    dados = escudo.linha_calculada(sender, pk)
+    if dados is None:
+        return  # excluída antes do commit; o post_delete dela já avisou
+    _publicar_entidade(personagem_id, {"tipo": "upsert", "entidade": _ENTIDADE[sender], "dados": dados})
+
+
+def _publicar_ficha(personagem_id):
+    """
+    Republica TODAS as linhas calculadas do personagem.
+
+    Usado quando a gravação cascateia: um bônus muda o total do alvo, e um
+    atributo (ou o Nível) muda o total de toda Defesa/Status apoiada nele —
+    sem que a `versao` dessas linhas mude, então elas nunca seriam
+    reenviadas e o Escudo ficaria com números velhos até a reconexão.
+
+    Republicar a ficha inteira em vez de calcular exatamente quem depende de
+    quem: são ~18 linhas de ~200 bytes, e o grafo de dependências é
+    transitivo (um bônus por entidade pode encadear). O custo é uma ficha
+    inteira por mudança de bônus/atributo, não por tecla digitada num Status.
+    """
+    campanhas = escudo.campanhas_do_personagem(personagem_id)
+    if not campanhas:
+        return
+    for entidade, dados in escudo.linhas_calculadas(personagem_id):
+        escudo.publicar(
+            campanhas,
+            {"tipo": "upsert", "entidade": entidade, "personagem": personagem_id, "dados": dados},
+        )
+
+
 def _entidade_salva(sender, instance, created, raw=False, **kwargs):
     if raw or not _mudou_algo_visivel(sender, instance, created):
         return
-    # Serializa AGORA (sem consulta nenhuma): é exatamente o estado desta
-    # versão, mesmo que a instância seja alterada de novo antes do commit.
-    dados = escudo.ENTIDADES_SERIALIZER[_ENTIDADE[sender]](instance).data
-    _ao_commit(
-        _publicar_entidade,
-        instance.personagem_id,
-        {"tipo": "upsert", "entidade": _ENTIDADE[sender], "dados": dados},
-    )
+
+    # A serialização foi adiada para o `on_commit` (antes era feita aqui,
+    # "sem consulta nenhuma"). Agora o serializer publica `valor_final`, que
+    # depende dos bônus do alvo e do atributo vinculado: montá-lo dentro do
+    # `post_save` custaria consultas a CADA gravação da ficha — e os botões
+    # rápidos de Status gravam a cada clique. No commit, a gravação em si
+    # volta a ser um único UPDATE.
+    if sender is Atributo:
+        # Atributo cascateia: Status, Defesas e Perícias que o referenciam
+        # mudam de total junto, e a própria linha dele vai no lote.
+        _ao_commit(_publicar_ficha, instance.personagem_id)
+    else:
+        _ao_commit(_publicar_linha, sender, instance.pk, instance.personagem_id)
 
 
 def _entidade_excluida(sender, instance, **kwargs):
@@ -151,6 +188,9 @@ def _bonus_salvo(sender, instance, created, raw=False, **kwargs):
         return
     evento = {"tipo": "upsert", "entidade": "bonus", "dados": escudo.bonus_dados(instance, tipo)}
     _ao_commit(_publicar_bonus, tipo, instance.object_id, evento)
+    # O bônus mudou: o total do alvo (e de quem depende dele) mudou junto,
+    # sem que a `versao` dessas linhas subisse. Ver `_publicar_ficha`.
+    _ao_commit(_publicar_ficha_do_alvo, tipo, instance.object_id)
 
 
 def _bonus_excluido(sender, instance, **kwargs):
@@ -158,7 +198,21 @@ def _bonus_excluido(sender, instance, **kwargs):
     if tipo is None:
         return
     evento = {"tipo": "remover", "entidade": "bonus", "id": instance.pk, "versao": instance.__dict__.get("versao")}
-    _ao_commit(_publicar_bonus, tipo, instance.__dict__.get("object_id"), evento)
+    object_id = instance.__dict__.get("object_id")
+    _ao_commit(_publicar_bonus, tipo, object_id, evento)
+    _ao_commit(_publicar_ficha_do_alvo, tipo, object_id)
+
+
+def _publicar_ficha_do_alvo(tipo, object_id):
+    """Ponte bônus -> personagem: o Bonus só conhece o alvo genérico."""
+    personagem_id = (
+        escudo.MODELOS_ALVO_BONUS[tipo]
+        .objects.filter(pk=object_id)
+        .values_list("personagem_id", flat=True)
+        .first()
+    )
+    if personagem_id is not None:
+        _publicar_ficha(personagem_id)
 
 
 # ---------------------------------------------------------------------------
@@ -181,6 +235,10 @@ def _personagem_salvo(sender, instance, created, raw=False, **kwargs):
     if raw or created or not _mudou_algo_visivel(sender, instance, created):
         return
     _ao_commit(_publicar_personagem, instance.pk)
+    # O Nível multiplica a contribuição do atributo em todo Status com
+    # `atributo_nivel` marcado: subir de nível muda esses totais sem mexer
+    # na linha do Status. Ver `_publicar_ficha`.
+    _ao_commit(_publicar_ficha, instance.pk)
 
 
 def _personagem_sera_excluido(sender, instance, **kwargs):

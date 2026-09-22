@@ -55,4 +55,13 @@ urlpatterns = [
     #BONUS
     path("<str:tipo>/<int:object_id>/bonus/", views.bonus_lista, name="bonus_lista"),
     path("bonus/<int:pk>/", views.bonus_detalhe, name="bonus_detalhe"),
+
+    # "USAR" (liga os bônus da entidade por 1 hora) — Técnica, Poder,
+    # Habilidade e Aprimoramento. O desconto do custo no Status continua
+    # sendo um PATCH no próprio Status, como sempre foi.
+    path("<str:tipo>/<int:object_id>/usar/", views.usar_entidade, name="usar_entidade"),
+
+    # Todos os valores finais da ficha numa requisição só — substitui uma
+    # requisição de bônus POR CARD no frontend.
+    path("<int:personagem_id>/calculos/", views.calculos_ficha, name="calculos_ficha"),
 ]
