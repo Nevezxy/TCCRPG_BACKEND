@@ -4395,7 +4395,9 @@ def combate_candidatos(request, pk):
 def combate_adicionar(request, pk):
     """
     `{"entidades": [{"tipo", "id", "quantidade"}]}` adiciona (repetições
-    permitidas: três goblins da mesma Criatura, cada um com seu PV), ou
+    permitidas: três goblins da mesma Criatura, cada um com seu PV) —
+    `tipo="avulso"` leva `{"tipo": "avulso", "nome", "quantidade"}` em vez
+    de `id`, para o "nome rápido" do Escudo, sem entidade cadastrada. Ou
     `{"todos_personagens": true}` adiciona só os personagens que ainda não
     estão no combate. Responde as linhas criadas, já na forma completa.
     """
@@ -4410,10 +4412,12 @@ def combate_adicionar(request, pk):
         if dados["todos_personagens"]:
             linhas = combate.adicionar(atual, todos_personagens=True)
         else:
+            reais = [e for e in dados["entidades"] if e["tipo"] != "avulso"]
+            avulsos = [(e["nome"], e["quantidade"]) for e in dados["entidades"] if e["tipo"] == "avulso"]
             entidades = combate.resolver_entidades(
-                campanha, [(e["tipo"], e["id"], e["quantidade"]) for e in dados["entidades"]]
+                campanha, [(e["tipo"], e["id"], e["quantidade"]) for e in reais]
             )
-            linhas = combate.adicionar(atual, entidades=entidades)
+            linhas = combate.adicionar(atual, entidades=entidades, avulsos=avulsos)
     except combate.ErroCombate as exc:
         return _erro_de_combate(exc)
     return Response(linhas, status=status.HTTP_201_CREATED)

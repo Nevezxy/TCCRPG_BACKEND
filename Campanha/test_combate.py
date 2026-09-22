@@ -215,6 +215,65 @@ class ParticipantesTests(CombateBase):
         self.assertFalse(ParticipanteCombate.objects.exists())
 
 
+class AvulsoTests(CombateBase):
+
+    def test_adiciona_avulso_pelo_nome_sem_pv(self):
+        resposta = self.client.post(
+            f"{self.base}participantes/",
+            {"entidades": [{"tipo": "avulso", "nome": "Bandido aleatório", "quantidade": 1}]},
+            format="json",
+        )
+        self.assertEqual(resposta.status_code, status.HTTP_201_CREATED)
+        linha = resposta.data[0]
+        self.assertEqual(linha["tipo"], "avulso")
+        self.assertEqual(linha["nome"], "Bandido aleatório")
+        self.assertIsNone(linha["foto"])
+        self.assertIsNone(linha["pv_atual"])
+        self.assertIsNone(linha["pv_max"])
+        self.assertEqual(linha["entidade_id"], ParticipanteCombate.objects.get().pk)
+
+    def test_avulso_pode_repetir_quantidade_e_misturar_com_entidades_reais(self):
+        resposta = self.client.post(
+            f"{self.base}participantes/",
+            {
+                "entidades": [
+                    {"tipo": "npc", "id": self.npc.pk, "quantidade": 1},
+                    {"tipo": "avulso", "nome": "Capanga", "quantidade": 2},
+                ]
+            },
+            format="json",
+        )
+        self.assertEqual(resposta.status_code, status.HTTP_201_CREATED)
+        self.assertEqual(len(resposta.data), 3)
+        avulsos = [linha for linha in resposta.data if linha["tipo"] == "avulso"]
+        self.assertEqual({linha["nome"] for linha in avulsos}, {"Capanga"})
+        self.assertEqual(len({linha["id"] for linha in avulsos}), 2)
+
+    def test_avulso_sem_nome_e_recusado(self):
+        resposta = self.client.post(
+            f"{self.base}participantes/",
+            {"entidades": [{"tipo": "avulso", "quantidade": 1}]},
+            format="json",
+        )
+        self.assertEqual(resposta.status_code, status.HTTP_400_BAD_REQUEST)
+        self.assertFalse(ParticipanteCombate.objects.exists())
+
+    def test_avulso_entra_na_ordem_e_pode_editar_iniciativa_e_pv(self):
+        linha = self.client.post(
+            f"{self.base}participantes/",
+            {"entidades": [{"tipo": "avulso", "nome": "Sombra", "quantidade": 1}]},
+            format="json",
+        ).data[0]
+        resposta = self.client.patch(
+            f"{self.base}participantes/{linha['id']}/", {"iniciativa": 18, "pv_atual": 10, "pv_max": 10},
+            format="json",
+        )
+        self.assertEqual(resposta.status_code, status.HTTP_200_OK)
+        estado = self.estado()
+        self.assertEqual(estado["participantes"][0]["nome"], "Sombra")
+        self.assertEqual(estado["participantes"][0]["iniciativa"], 18)
+
+
 class DanoTests(CombateBase):
 
     def setUp(self):
