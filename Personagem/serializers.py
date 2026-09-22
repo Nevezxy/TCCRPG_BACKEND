@@ -387,6 +387,16 @@ class BonusSerializer(serializers.ModelSerializer):
            Atletismo → Força), que deixaria o cálculo sem ponto fixo.
         """
         instancia = self.instance
+
+        # Desligar à mão apaga o prazo. `expira_em` só existe para o bônus
+        # que o botão "Usar" acendeu por 1 hora; com o bônus desligado ele
+        # não significa mais nada, e deixá-lo gravado faria a ficha seguir
+        # exibindo uma contagem regressiva para algo que já está apagado.
+        # `expira_em` é read-only na escrita (quem o define é o "Usar"), por
+        # isso ele entra aqui e não vem do payload.
+        if attrs.get("ativo") is False:
+            attrs["expira_em"] = None
+
         tipo_origem = attrs.get(
             "tipo_origem",
             instancia.tipo_origem if instancia else Bonus.TIPO_MANUAL,

@@ -380,6 +380,34 @@ class UsarTests(FichaBase):
         # de o varredor ter rodado.
         self.assertEqual(self.final(defesa), 10)
 
+    def test_desligar_a_mao_apaga_o_prazo(self):
+        """
+        `expira_em` só existe para o bônus que o "Usar" acendeu. Desligado à
+        mão, o prazo não significa mais nada — e, se ficasse gravado, a ficha
+        seguiria exibindo uma contagem regressiva para algo já apagado.
+        """
+        defesa = Defesa.objects.create(personagem=self.personagem, nome="CA", valor=10)
+        bonus = bonus_manual(defesa, 3, expira_em=timezone.now() + timedelta(hours=1))
+
+        resposta = self.client.patch(f"/personagem/bonus/{bonus.pk}/", {"ativo": False}, format="json")
+
+        self.assertEqual(resposta.status_code, http.HTTP_200_OK, resposta.data)
+        bonus.refresh_from_db()
+        self.assertFalse(bonus.ativo)
+        self.assertIsNone(bonus.expira_em)
+
+    def test_religar_a_mao_nao_inventa_prazo(self):
+        """O contrário não vale: religar à mão dá um bônus permanente, não
+        mais uma hora — só o botão "Usar" define prazo."""
+        defesa = Defesa.objects.create(personagem=self.personagem, nome="CA", valor=10)
+        bonus = bonus_manual(defesa, 3, ativo=False)
+
+        self.client.patch(f"/personagem/bonus/{bonus.pk}/", {"ativo": True}, format="json")
+
+        bonus.refresh_from_db()
+        self.assertTrue(bonus.ativo)
+        self.assertIsNone(bonus.expira_em)
+
     def test_varredor_persiste_a_expiracao(self):
         defesa = Defesa.objects.create(personagem=self.personagem, nome="CA", valor=10)
         vencido = bonus_manual(defesa, 5, expira_em=timezone.now() - timedelta(minutes=1))
