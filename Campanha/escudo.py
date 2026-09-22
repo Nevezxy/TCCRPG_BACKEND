@@ -215,6 +215,17 @@ def linhas_calculadas(personagem_id):
     Status, Atributos e Defesas de um personagem já com `valor_final`,
     serializados com UM contexto de cálculo compartilhado.
 
+    Os eventos montados a partir daqui viajam com `recalculo: True`. Isso
+    existe porque a `versao` dessas linhas NÃO muda — elas não foram
+    gravadas; o que mudou foi um total derivado delas (um bônus ligou, um
+    atributo subiu). Sem a marca, o cliente aplicaria a regra normal de
+    ordenação ("só aceito versão maior que a minha") e descartaria o evento
+    em silêncio, deixando o Escudo com o número velho até a reconexão.
+
+    Com a marca, o cliente aceita o evento mas atualiza SÓ os campos
+    calculados, deixando o resto da linha como está — a proteção contra
+    mensagem atrasada continua valendo para os dados de verdade.
+
     Existe porque `valor_final` é derivado: mudar UM bônus muda o total do
     alvo, e mudar UM atributo muda o total de toda Defesa/Status que se
     apoia nele — sem que a `versao` dessas linhas mude. Publicar só a linha
