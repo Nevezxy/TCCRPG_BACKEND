@@ -519,6 +519,32 @@ class ListagensTests(FichaBase):
         self.assertEqual(len(resposta.data), 30)
         self.assertEqual(len(muitas), len(poucas))
 
+    def test_listagem_de_pericias_respeita_a_ordem_manual(self):
+        """
+        A aba de Perícias deixa arrastar para uma ordem própria, gravada em
+        `Pericia.ordem` pelo mesmo PATCH que Status e Arma já usavam. A
+        listagem tem que devolver nessa ordem.
+        """
+        for nome, ordem in (("Atletismo", 2), ("Blefe", 0), ("Cura", 1)):
+            Pericia.objects.create(personagem=self.personagem, nome=nome, ordem=ordem)
+
+        resposta = self.client.get(f"/personagem/{self.personagem.pk}/pericias/")
+
+        self.assertEqual([p["nome"] for p in resposta.data], ["Blefe", "Cura", "Atletismo"])
+
+    def test_pericias_sem_ordem_definida_saem_em_ordem_alfabetica(self):
+        """
+        Toda ficha que já existia nasce com `ordem = 0` em todas as perícias.
+        Enquanto ninguém arrastar nada, o desempate por nome tem que manter a
+        lista exatamente como ela era antes do campo existir.
+        """
+        for nome in ("Cura", "Atletismo", "Blefe"):
+            Pericia.objects.create(personagem=self.personagem, nome=nome)
+
+        resposta = self.client.get(f"/personagem/{self.personagem.pk}/pericias/")
+
+        self.assertEqual([p["nome"] for p in resposta.data], ["Atletismo", "Blefe", "Cura"])
+
     def test_listagem_publica_o_total_e_a_decomposicao(self):
         pericia = Pericia.objects.create(
             personagem=self.personagem, nome="Atletismo", treinamento=2,

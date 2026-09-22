@@ -154,6 +154,11 @@ class Pericia(models.Model):
     nome = models.CharField(max_length=100)
     treinamento = models.IntegerField(default=0)
     somar_atributo = models.BooleanField(default=False)
+    # Posição na ordenação manual da aba de Perícias, gravada pelo arraste
+    # (o mesmo campo e o mesmo PATCH que Status, Defesa e Arma já usam).
+    # Nasce 0 em toda ficha existente: enquanto ninguém arrastar nada, o
+    # desempate por `nome` mantém a lista exatamente como estava.
+    ordem = models.PositiveIntegerField(default=0)
     
     def __str__(self):
         return f"{self.nome} ({self.personagem.nome})"
