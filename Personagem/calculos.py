@@ -236,10 +236,37 @@ def ids_do_personagem(modelo, personagem_id):
     return list(modelo.objects.filter(personagem_id=personagem_id).values_list("pk", flat=True))
 
 
+def bonus_relacionados(alvo):
+    """
+    Todos os bônus que dizem respeito a esta entidade, nos DOIS sentidos:
+
+      - os que ela RECEBE (`content_type`/`object_id` apontam para ela);
+      - os que ela FORNECE (`origem_*` aponta para ela) — um bônus na Força
+        cuja origem é a Habilidade "Fúria" é um bônus *dela*, ainda que a
+        linha esteja pendurada no atributo.
+
+    O segundo sentido é o caso comum de Técnica/Poder/Habilidade/
+    Aprimoramento: o `valor_final` dessas entidades é digitado justamente
+    para servir de origem a bônus de outras. Uma Habilidade que concede +2 de
+    Força não tem bônus nenhum em cima de si — o bônus mora no Atributo.
+    """
+    content_type = ContentType.objects.get_for_model(MODELOS_ALVO[chave_de(alvo)[0]])
+    object_id = alvo.pk
+    return Bonus.objects.filter(
+        Q(content_type=content_type, object_id=object_id)
+        | Q(origem_content_type=content_type, origem_object_id=object_id)
+    ).order_by("id")
+
+
 def ativar_bonus_por_uso(alvo, duracao_segundos=DURACAO_USO_SEGUNDOS, agora=None):
     """
     Regra do botão "Usar" de Técnica/Poder/Habilidade/Aprimoramento: liga os
-    bônus DESLIGADOS da entidade e marca a hora em que devem cair.
+    bônus DESLIGADOS relacionados à entidade e marca a hora em que devem cair.
+
+    "Relacionados" nos dois sentidos — ver `bonus_relacionados`. É o sentido
+    da ORIGEM que faz a regra valer na prática: usar a Habilidade "Fúria"
+    precisa acender o +2 que ela concede à Força, e esse bônus está no
+    Atributo, não na Habilidade.
 
     Bônus que já estavam ligados de propósito (sem prazo) são deixados em paz
     — usar uma técnica não pode transformar um bônus permanente do jogador
@@ -250,11 +277,9 @@ def ativar_bonus_por_uso(alvo, duracao_segundos=DURACAO_USO_SEGUNDOS, agora=None
     """
     agora = agora or timezone.now()
     expira_em = agora + timedelta(seconds=duracao_segundos)
-    tipo, object_id = chave_de(alvo)
-    content_type = ContentType.objects.get_for_model(MODELOS_ALVO[tipo])
 
     afetados = []
-    for bonus in Bonus.objects.filter(content_type=content_type, object_id=object_id):
+    for bonus in bonus_relacionados(alvo):
         if bonus.ativo and bonus.expira_em is None:
             continue
         bonus.ativo = True

@@ -37,6 +37,7 @@ from .models import (
     Item,
     Pericia,
     Personagem,
+    Poder,
     Status,
     Tecnica,
 )
@@ -317,6 +318,39 @@ class UsarTests(FichaBase):
     def setUp(self):
         super().setUp()
         self.tecnica = Tecnica.objects.create(personagem=self.personagem, nome="Foco")
+
+    def test_usar_liga_o_bonus_que_a_entidade_CONCEDE_a_outra(self):
+        """
+        O caso que a regra existe para cobrir: uma Habilidade que dá +2 de
+        Força não tem bônus nenhum em cima de si — o bônus mora no Atributo,
+        com a Habilidade como origem. Usar a Habilidade precisa acender esse
+        bônus lá.
+        """
+        habilidade = Habilidade.objects.create(personagem=self.personagem, nome="Fúria", valor_final=2)
+        concedido = Bonus.objects.create(
+            content_type=ContentType.objects.get_for_model(Atributo),
+            object_id=self.forca.pk,
+            nome="Fúria",
+            ativo=False,
+            tipo_origem=Bonus.TIPO_ENTIDADE,
+            origem_content_type=ContentType.objects.get_for_model(Poder),  # base de Habilidade
+            origem_object_id=habilidade.pk,
+        )
+        # Desligado, a Força vale só a base.
+        self.assertEqual(self.final(self.forca), 4)
+
+        resposta = self.client.post(f"/personagem/habilidade/{habilidade.pk}/usar/")
+        self.assertEqual(resposta.status_code, http.HTTP_200_OK, resposta.data)
+
+        concedido.refresh_from_db()
+        self.assertTrue(concedido.ativo)
+        self.assertIsNotNone(concedido.expira_em)
+        # E o atributo já reflete o bônus aceso.
+        self.assertEqual(self.final(Atributo.objects.get(pk=self.forca.pk)), 6)
+
+        # A resposta traz o bônus do OUTRO alvo, para o cliente atualizar o
+        # card dele sem esperar uma segunda requisição.
+        self.assertIn(concedido.pk, [b["id"] for b in resposta.data])
 
     def test_usar_liga_os_bonus_por_uma_hora(self):
         desligado = bonus_manual(self.tecnica, 3, ativo=False)
