@@ -250,3 +250,34 @@ class NotasNoPerfilTests(BasePerfil):
         )
 
         self.assertEqual(resposta.status_code, status.HTTP_400_BAD_REQUEST)
+
+
+class OutrosUsuariosTests(BasePerfil):
+
+    def setUp(self):
+        super().setUp()
+        self.admin = Usuario.objects.create_superuser(username="admin", password="SenhaForte123!")
+        Personagem.objects.create(usuario=self.admin, nome="Do Admin")
+        Personagem.objects.create(usuario=self.bia, nome="Irisa")
+        Campanha.objects.create(mestre=self.admin, nome="Mesa do Admin").jogadores.add(self.admin)
+
+    def test_superusuario_ve_so_o_que_e_dos_outros_com_o_dono(self):
+        self.client.force_authenticate(self.admin)
+
+        personagens = self.client.get("/usuario/outros/personagens/").data
+        self.assertEqual([p["nome"] for p in personagens], ["Irisa"])
+        self.assertEqual(personagens[0]["dono"]["username"], "bia")
+
+        campanhas = self.client.get("/usuario/outros/campanhas/").data
+        self.assertEqual([c["nome"] for c in campanhas], ["Cinzas"])
+
+    def test_abas_pessoais_do_superusuario_sao_so_dele(self):
+        self.client.force_authenticate(self.admin)
+
+        self.assertEqual([p["nome"] for p in self.client.get("/usuario/me/personagens/").data], ["Do Admin"])
+        self.assertEqual([c["nome"] for c in self.client.get("/usuario/me/campanhas/").data], ["Mesa do Admin"])
+        self.assertTrue(self.client.get("/usuario/me/").data["is_superuser"])
+
+    def test_usuario_comum_recebe_403(self):
+        self.assertEqual(self.client.get("/usuario/outros/personagens/").status_code, status.HTTP_403_FORBIDDEN)
+        self.assertEqual(self.client.get("/usuario/outros/campanhas/").status_code, status.HTTP_403_FORBIDDEN)

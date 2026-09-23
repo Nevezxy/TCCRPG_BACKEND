@@ -213,6 +213,12 @@ Tudo sob `me/` é sempre do usuário logado — não há id na URL para trocar.
 | `GET\|POST` | `/usuario/me/poderes/` | Poderes da conta (`PoderUsuario`). |
 | `GET\|PUT\|PATCH\|DELETE` | `/usuario/me/poderes/<id>/` | Um poder da conta. Só o dono. |
 | `GET` | `/usuario/<id>/` | Perfil de outro usuário, sem e-mail. Só para quem divide alguma campanha com ele (404 para os demais). |
+| `GET` | `/usuario/outros/personagens/` | **Só superusuário.** Fichas de todos os OUTROS usuários, cada uma com `dono`. |
+| `GET` | `/usuario/outros/campanhas/` | **Só superusuário.** Campanhas em que ele não é mestre nem jogador. |
+
+As abas pessoais do perfil (`/me/...`) mostram só o que é do próprio usuário, mesmo para
+superusuário; o que é dos outros fica nas rotas `outros/` (aba "Outros usuários").
+`/usuario/me/` expõe `is_superuser` (só leitura) para o frontend decidir se mostra essa aba.
 
 **Poderes da conta.** `PoderUsuario` tem os mesmos campos de `Poder` (os dois herdam
 de `PoderBase`), menos `tecnica` e `status`, que apontam para linhas de uma ficha só.

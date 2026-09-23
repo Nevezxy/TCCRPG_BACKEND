@@ -1,6 +1,10 @@
 from rest_framework import serializers
 
+from drf_spectacular.utils import extend_schema_field
+
+from Campanha.serializers import UsuarioResumoSerializer
 from Midia.serializers import CloudinaryUrlSerializerMixin
+from Personagem.serializers import PersonagemSerializer
 
 from .models import Usuario
 
@@ -57,8 +61,11 @@ class UsuarioSerializer(CloudinaryUrlSerializerMixin, serializers.ModelSerialize
 
     class Meta:
         model = Usuario
-        fields = _CAMPOS_PERFIL + ("email", "totais")
-        read_only_fields = ("id", "username", "date_joined", "data_atualizacao")
+        # `is_superuser` diz ao frontend se mostra a aba "Outros usuários"
+        # do perfil — só leitura, claro; a checagem de verdade é no backend
+        # (`outros_personagens`/`outras_campanhas`).
+        fields = _CAMPOS_PERFIL + ("email", "totais", "is_superuser")
+        read_only_fields = ("id", "username", "date_joined", "data_atualizacao", "is_superuser")
 
     def get_totais(self, obj) -> dict:
         from Campanha.models import Campanha
@@ -75,6 +82,17 @@ class UsuarioSerializer(CloudinaryUrlSerializerMixin, serializers.ModelSerialize
 
     def validate_cor_perfil(self, valor):
         return valor.lower()
+
+
+class PersonagemDeOutroSerializer(PersonagemSerializer):
+    """Ficha vista na aba "Outros usuários" (superusuário): a ficha de
+    sempre mais quem é o dono."""
+
+    dono = serializers.SerializerMethodField()
+
+    @extend_schema_field(UsuarioResumoSerializer)
+    def get_dono(self, obj):
+        return UsuarioResumoSerializer(obj.usuario, context=self.context).data
 
 
 class RegistroSerializer(serializers.ModelSerializer):

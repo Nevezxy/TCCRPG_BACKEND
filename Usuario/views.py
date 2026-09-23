@@ -8,13 +8,13 @@ from rest_framework.permissions import IsAuthenticated, AllowAny
 from rest_framework.response import Response
 
 from Campanha.models import Campanha
-from Campanha.serializers import CampanhaPerfilSerializer
+from Campanha.serializers import CampanhaPerfilSerializer, CampanhaSerializer
 from Personagem.models import Personagem, PoderUsuario
 from Personagem.serializers import PersonagemSerializer, PoderUsuarioSerializer
 
 from .models import Usuario
 from .permissions import pode_ver_perfil
-from .serializers import PerfilPublicoSerializer, RegistroSerializer, UsuarioSerializer
+from .serializers import PerfilPublicoSerializer, PersonagemDeOutroSerializer, RegistroSerializer, UsuarioSerializer
 from .utils import check_object_permission
 
 
@@ -228,3 +228,65 @@ def me_poder_detalhe(request, pk):
         return Response(serializer.data)
 
     return Response(serializer.errors, status=status.HTTP_400_BAD_REQUEST)
+
+
+# ---------------------------------------------------------------------------
+# Aba "Outros usuários" do perfil — só superusuário.
+#
+# Antes, `GET /personagem/` e `GET /campanha/` devolviam TUDO do banco para o
+# superusuário, e as listas "minhas" dele viravam a lista do sistema inteiro.
+# O perfil agora separa as duas coisas: as abas pessoais usam `/me/...`
+# (sempre só o que é dele) e o que é dos outros vem daqui, com o dono de
+# cada item — sem ele, uma lista de 300 fichas não diz de quem é cada uma.
+# ---------------------------------------------------------------------------
+
+def _exige_superusuario(request):
+    if not request.user.is_superuser:
+        return Response(
+            {"erro": "Disponível apenas para superusuários."},
+            status=status.HTTP_403_FORBIDDEN
+        )
+    return None
+
+
+@extend_schema(
+    methods=["GET"],
+    operation_id="listar_personagens_de_outros_usuarios",
+    responses=PersonagemDeOutroSerializer(many=True),
+)
+@api_view(["GET"])
+@permission_classes([IsAuthenticated])
+def outros_personagens(request):
+    negado = _exige_superusuario(request)
+    if negado:
+        return negado
+
+    personagens = (
+        Personagem.objects.exclude(usuario=request.user)
+        .select_related("usuario")
+        .prefetch_related("campanhas", "sistemas")
+        .order_by("-atualizado_em")
+    )
+    return Response(PersonagemDeOutroSerializer(personagens, many=True).data)
+
+
+@extend_schema(
+    methods=["GET"],
+    operation_id="listar_campanhas_de_outros_usuarios",
+    responses=CampanhaSerializer(many=True),
+)
+@api_view(["GET"])
+@permission_classes([IsAuthenticated])
+def outras_campanhas(request):
+    negado = _exige_superusuario(request)
+    if negado:
+        return negado
+
+    campanhas = (
+        Campanha.objects.exclude(Q(mestre=request.user) | Q(jogadores=request.user))
+        .distinct()
+        .select_related("mestre")
+        .prefetch_related("jogadores", "moderadores", "personagens__usuario", "sistemas")
+        .order_by("-atualizado_em")
+    )
+    return Response(CampanhaSerializer(campanhas, many=True).data)
