@@ -6,13 +6,37 @@ from rest_framework_simplejwt.views import (
     TokenRefreshView,
 )
 
-from .views import registrar, me
+from .views import (
+    me,
+    me_campanhas,
+    me_personagens,
+    me_poder_detalhe,
+    me_poderes,
+    outras_campanhas,
+    outros_personagens,
+    perfil,
+    registrar,
+)
 
 urlpatterns = [
 
     path("registrar/", registrar),
 
     path("me/", me),
+
+    # Perfil (a página `/perfil` do frontend). Tudo sob `me/` é sempre do
+    # usuário logado — não existe id na URL para trocar pelo de outra pessoa.
+    path("me/personagens/", me_personagens),
+    path("me/campanhas/", me_campanhas),
+    path("me/poderes/", me_poderes),
+    path("me/poderes/<int:pk>/", me_poder_detalhe),
+
+    # Aba "Outros usuários" do perfil — só superusuário.
+    path("outros/personagens/", outros_personagens),
+    path("outros/campanhas/", outras_campanhas),
+
+    # Perfil de outro usuário (somente leitura, sem e-mail).
+    path("<int:pk>/", perfil),
 
     # AUDIT FIX: TokenObtainPairView/TokenRefreshView não declaram
     # permission_classes próprias, então herdam o DEFAULT_PERMISSION_CLASSES

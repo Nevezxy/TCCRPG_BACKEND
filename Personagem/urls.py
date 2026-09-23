@@ -44,6 +44,14 @@ urlpatterns = [
     path("<int:personagem_id>/poderes/", views.poder_lista, name="poder_lista"),
     path("poderes/<int:pk>/", views.poder_detalhe, name="poder_detalhe"),
 
+    # PODERES DA CONTA na Biblioteca da ficha (listar + copiar)
+    path("<int:personagem_id>/poderes-usuario/", views.personagem_poderes_usuario, name="personagem_poderes_usuario"),
+    path(
+        "<int:personagem_id>/poderes-usuario/<int:poder_id>/copiar/",
+        views.copiar_poder_usuario,
+        name="copiar_poder_usuario",
+    ),
+
     # HABILIDADES
     path("<int:personagem_id>/habilidades/", views.habilidade_lista, name="habilidade_lista"),
     path("habilidades/<int:pk>/", views.habilidade_detalhe, name="habilidade_detalhe"),

@@ -11,6 +11,7 @@ from cloudinary.models import CloudinaryField
 
 from Midia.services import copiar_ajuste
 from Personagem.models import Arma, Armadura, Item, Personagem
+from Usuario.models import Usuario
 from Personagem.serializers import ArmaSerializer, ArmaduraSerializer, ItemSerializer, PersonagemSerializer
 
 from django.contrib.contenttypes.models import ContentType
@@ -2632,6 +2633,10 @@ def nota_detalhe(request, pk):
     if objeto is not None and not e_autor:
         campanhas_do_objeto = campanhas_do_objeto_notavel(objeto)
         e_mestre_do_objeto = any(pode_gerenciar_campanha(c, request.user) for c in campanhas_do_objeto)
+        # Mural do perfil: o dono do perfil modera o próprio mural, no mesmo
+        # papel que o mestre tem sobre as notas da campanha dele.
+        if isinstance(objeto, Usuario) and objeto.pk == request.user.pk:
+            e_mestre_do_objeto = True
 
     if request.method == "GET":
 

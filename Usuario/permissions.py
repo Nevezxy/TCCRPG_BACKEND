@@ -1,5 +1,6 @@
 from rest_framework.permissions import BasePermission
 from rest_framework.exceptions import PermissionDenied
+from django.contrib.auth import get_user_model
 from django.db.models import Q
 
 
@@ -74,6 +75,35 @@ def _pode_acessar_personagem(personagem, user, is_safe):
     return False
 
 
+def compartilham_campanha(usuario_a, usuario_b):
+    """
+    Os dois estão numa mesma Campanha, em qualquer papel (mestre, moderador
+    ou jogador)? É a régua de "conhecer" alguém no produto: o perfil de um
+    usuário — e o mural de notas nele — só é visível para quem já joga com
+    ele. Import local porque `Campanha` importa deste módulo.
+    """
+    from Campanha.models import Campanha
+
+    return (
+        Campanha.objects.filter(Q(mestre=usuario_a) | Q(jogadores=usuario_a) | Q(moderadores=usuario_a))
+        .filter(Q(mestre=usuario_b) | Q(jogadores=usuario_b) | Q(moderadores=usuario_b))
+        .exists()
+    )
+
+
+def _e_usuario(obj):
+    # Checagem por classe, e não por atributo como o resto deste módulo:
+    # o Usuario TEM `campanhas` (M2M reverso de `Campanha.jogadores`) e
+    # `personagens`, e cairia no ramo errado de qualquer teste de `hasattr`.
+    return isinstance(obj, get_user_model())
+
+
+def pode_ver_perfil(user, perfil):
+    """Quem pode ver (e anotar) o perfil `perfil`: ele mesmo, superuser, ou
+    quem divide alguma campanha com ele."""
+    return user.is_superuser or perfil.pk == user.pk or compartilham_campanha(user, perfil)
+
+
 def usuario_pode_ver_objeto(user, obj):
     """
     Mesma regra de visibilidade usada no ramo "leitura" de
@@ -86,6 +116,9 @@ def usuario_pode_ver_objeto(user, obj):
     """
     if user.is_superuser:
         return True
+
+    if _e_usuario(obj):
+        return pode_ver_perfil(user, obj)
 
     if hasattr(obj, "mestre") and hasattr(obj, "jogadores"):
         return obj.mestre == user or obj.jogadores.filter(pk=user.pk).exists()
@@ -126,6 +159,13 @@ class IsOwnerOrAdmin(BasePermission):
             return True
 
         is_safe = request.method in ("GET", "HEAD", "OPTIONS")
+
+        # --- O próprio objeto é um Usuario (perfil) ---
+        # Ler: quem divide campanha com ele. Editar: só ele mesmo.
+        if _e_usuario(obj):
+            if obj.pk == request.user.pk:
+                return True
+            return is_safe and pode_ver_perfil(request.user, obj)
 
         # --- O próprio objeto é uma Campanha ---
         if hasattr(obj, "mestre") and hasattr(obj, "jogadores"):

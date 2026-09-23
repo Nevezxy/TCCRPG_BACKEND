@@ -200,6 +200,41 @@ seguintes endpoints (prefixo `/usuario/`):
 | `POST` | `/usuario/refresh/` | Troca um `refresh` token válido por um novo `access` token. Público. |
 | `GET` | `/usuario/me/` | Retorna os dados do usuário autenticado. Requer autenticação. |
 
+### Perfil do usuário (`/usuario/`)
+
+Tudo sob `me/` é sempre do usuário logado — não há id na URL para trocar.
+
+| Método | Endpoint | Descrição |
+|---|---|---|
+| `GET` | `/usuario/me/` | Perfil completo: `foto`, `banner` (+ `*_ajuste`), `descricao`, `cor_perfil` (`#rrggbb`), `links_sociais` (`[{rotulo, url}]`, até 6, só `http(s)://`), `data_atualizacao`, `email` e `totais` (`personagens`, `campanhas`, `poderes`). |
+| `PATCH` | `/usuario/me/` | Edita o próprio perfil. JSON ou multipart (para `foto`/`banner`; em multipart, `links_sociais` vai como string JSON). `username` é somente leitura. |
+| `GET` | `/usuario/me/personagens/` | Personagens do usuário (mais recentes primeiro). |
+| `GET` | `/usuario/me/campanhas/` | Campanhas em que é mestre ou jogador, com `papel`: `mestre`, `moderador` ou `jogador`. |
+| `GET\|POST` | `/usuario/me/poderes/` | Poderes da conta (`PoderUsuario`). |
+| `GET\|PUT\|PATCH\|DELETE` | `/usuario/me/poderes/<id>/` | Um poder da conta. Só o dono. |
+| `GET` | `/usuario/<id>/` | Perfil de outro usuário, sem e-mail. Só para quem divide alguma campanha com ele (404 para os demais). |
+| `GET` | `/usuario/outros/personagens/` | **Só superusuário.** Fichas de todos os OUTROS usuários, cada uma com `dono`. |
+| `GET` | `/usuario/outros/campanhas/` | **Só superusuário.** Campanhas em que ele não é mestre nem jogador. |
+
+As abas pessoais do perfil (`/me/...`) mostram só o que é do próprio usuário, mesmo para
+superusuário; o que é dos outros fica nas rotas `outros/` (aba "Outros usuários").
+`/usuario/me/` expõe `is_superuser` (só leitura) para o frontend decidir se mostra essa aba.
+
+**Poderes da conta.** `PoderUsuario` tem os mesmos campos de `Poder` (os dois herdam
+de `PoderBase`), menos `tecnica` e `status`, que apontam para linhas de uma ficha só.
+Eles aparecem na Biblioteca da ficha ao lado dos poderes do Sistema e, como todo o
+resto da Biblioteca, são **copiados** para a ficha como um `Poder` comum (que então
+ganha técnica, status, bônus e "Usar"). Editar o poder da conta depois não altera as
+cópias.
+
+- `GET /personagem/<id>/poderes-usuario/` — os poderes da conta do dono da ficha. Só para quem pode editar a ficha (dono ou mestre/moderador de uma campanha dela).
+- `POST /personagem/<id>/poderes-usuario/<poder_id>/copiar/` — copia para a ficha. O poder precisa ser da conta do **dono da ficha**.
+
+**Mural do perfil.** Notas em perfil usam o mesmo `/campanha/notas/` com
+`content_type=usuario`. Escreve e lê quem divide campanha com o dono do perfil;
+o dono pode remover qualquer nota do próprio mural. Notas de perfil não aceitam
+`personagem` (quem fala é o usuário).
+
 Todas as demais rotas do projeto exigem o header:
 
 ```

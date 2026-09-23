@@ -14,6 +14,8 @@ from .serializers import *
 from rest_framework.permissions import IsAuthenticated
 from rest_framework.decorators import permission_classes
 from Usuario.utils import check_object_permission
+from Usuario.permissions import _pode_acessar_personagem
+from Midia.services import copiar_ajuste
 
 
 @extend_schema(
@@ -1920,3 +1922,100 @@ def calculos_ficha(request, personagem_id):
     ).data
 
     return Response(dados)
+
+
+# ---------------------------------------------------------------------------
+# PODERES DA CONTA na Biblioteca da ficha (ver `PoderUsuario`)
+# ---------------------------------------------------------------------------
+
+def _pode_editar_ficha(request, personagem):
+    """Mesma régua de "adicionar da Biblioteca" do Sistema: quem pode EDITAR
+    a ficha (dono, ou mestre/moderador de uma campanha dela)."""
+    return (
+        request.user.is_superuser
+        or personagem.usuario_id == request.user.id
+        or _pode_acessar_personagem(personagem, request.user, is_safe=False)
+    )
+
+
+@extend_schema(
+    methods=["GET"],
+    operation_id="listar_poderes_usuario_biblioteca",
+    responses=PoderUsuarioSerializer(many=True),
+    description=(
+        "Os poderes da CONTA do dono desta ficha, para a Biblioteca. Só para "
+        "quem pode editar a ficha (dono ou mestre/moderador de uma campanha "
+        "dela) — é quem pode adicionar algo da Biblioteca a ela."
+    ),
+)
+@api_view(["GET"])
+@permission_classes([IsAuthenticated])
+def personagem_poderes_usuario(request, personagem_id):
+
+    try:
+        personagem = Personagem.objects.get(pk=personagem_id)
+
+    except Personagem.DoesNotExist:
+        return Response(
+            {"erro": "Personagem não encontrado."},
+            status=status.HTTP_404_NOT_FOUND
+        )
+
+    if not _pode_editar_ficha(request, personagem):
+        return Response(
+            {"erro": "Você não pode adicionar poderes a esta ficha."},
+            status=status.HTTP_403_FORBIDDEN
+        )
+
+    poderes = PoderUsuario.objects.filter(usuario_id=personagem.usuario_id).order_by("nome")
+    return Response(PoderUsuarioSerializer(poderes, many=True).data)
+
+
+@extend_schema(
+    methods=["POST"],
+    operation_id="copiar_poder_usuario",
+    request=None,
+    responses=PoderSerializer,
+)
+@api_view(["POST"])
+@permission_classes([IsAuthenticated])
+def copiar_poder_usuario(request, personagem_id, poder_id):
+    """
+    Copia um poder da conta para a ficha como um `Poder` comum — o mesmo
+    que `Sistema/views.py::copiar_poder_sistema` faz com o catálogo. O poder
+    precisa ser da conta do DONO da ficha: o mestre adiciona à ficha de um
+    jogador um poder que o jogador cadastrou, nunca um da própria conta.
+    """
+
+    try:
+        personagem = Personagem.objects.get(pk=personagem_id)
+
+    except Personagem.DoesNotExist:
+        return Response(
+            {"erro": "Personagem não encontrado."},
+            status=status.HTTP_404_NOT_FOUND
+        )
+
+    check_object_permission(request, personagem)
+
+    try:
+        origem = PoderUsuario.objects.get(pk=poder_id, usuario_id=personagem.usuario_id)
+
+    except PoderUsuario.DoesNotExist:
+        return Response(
+            {"erro": "Poder não encontrado entre os poderes da conta do dono desta ficha."},
+            status=status.HTTP_404_NOT_FOUND
+        )
+
+    poder = Poder.objects.create(
+        personagem=personagem,
+        midia=origem.midia or "",
+        tag=origem.tag,
+        nome=origem.nome,
+        descricao=origem.descricao,
+        custo=origem.custo,
+        valor_final=origem.valor_final,
+    )
+    copiar_ajuste(origem, poder, ["midia"])
+
+    return Response(PoderSerializer(poder).data, status=status.HTTP_201_CREATED)

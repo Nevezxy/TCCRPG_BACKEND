@@ -238,6 +238,17 @@ class PoderSerializer(CloudinaryUrlSerializerMixin, serializers.ModelSerializer)
         read_only_fields = ("personagem",)
 
 
+class PoderUsuarioSerializer(CloudinaryUrlSerializerMixin, serializers.ModelSerializer):
+    """Poder da conta (ver `PoderUsuario`)."""
+
+    media_fields = ["midia"]
+
+    class Meta:
+        model = PoderUsuario
+        fields = "__all__"
+        read_only_fields = ("usuario", "criado_em", "atualizado_em")
+
+
 class HabilidadeSerializer(CloudinaryUrlSerializerMixin, serializers.ModelSerializer):
 
     media_fields = ["midia"]
