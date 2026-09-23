@@ -172,7 +172,7 @@ def me_campanhas(request):
 def me_poderes(request):
 
     if request.method == "GET":
-        poderes = PoderUsuario.objects.filter(usuario=request.user).prefetch_related("personagens")
+        poderes = PoderUsuario.objects.filter(usuario=request.user)
         return Response(PoderUsuarioSerializer(poderes, many=True).data)
 
     serializer = PoderUsuarioSerializer(data=request.data)
@@ -216,8 +216,7 @@ def me_poder_detalhe(request, pk):
         return Response(PoderUsuarioSerializer(poder).data)
 
     if request.method == "DELETE":
-        # Some de todas as fichas que o vinculavam (a tabela do M2M cai
-        # junto) — é o comportamento esperado de "poder da conta".
+        # As fichas que já copiaram este poder ficam com a cópia delas.
         poder.delete()
         return Response(status=status.HTTP_204_NO_CONTENT)
 

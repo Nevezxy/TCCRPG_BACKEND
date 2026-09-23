@@ -7,7 +7,7 @@ from rest_framework import status
 from rest_framework.test import APITestCase
 
 from Campanha.models import Campanha, Nota
-from Personagem.models import Personagem, PoderUsuario
+from Personagem.models import Personagem, Poder, PoderUsuario
 
 from .models import Usuario
 
@@ -136,48 +136,55 @@ class PoderUsuarioTests(BasePerfil):
         self.assertEqual(self.client.delete(f"/usuario/me/poderes/{alheio.pk}/").status_code, status.HTTP_403_FORBIDDEN)
         self.assertEqual(self.client.get("/usuario/me/poderes/").data, [])
 
-    def test_vincular_e_desvincular_da_ficha(self):
+    def test_biblioteca_da_ficha_lista_os_poderes_da_conta_do_dono(self):
         kael = Personagem.objects.create(usuario=self.ana, nome="Kael")
-        poder = PoderUsuario.objects.create(usuario=self.ana, nome="Passo Sombrio")
-        url = f"/personagem/{kael.pk}/poderes-usuario/{poder.pk}/"
+        PoderUsuario.objects.create(usuario=self.ana, nome="Passo Sombrio")
+        PoderUsuario.objects.create(usuario=self.bia, nome="De outra conta")
 
-        self.assertEqual(self.client.post(url).status_code, status.HTTP_201_CREATED)
-        self.assertEqual(self.client.post(url).status_code, status.HTTP_201_CREATED)  # idempotente
-        self.assertEqual(list(kael.poderes_usuario.all()), [poder])
+        resposta = self.client.get(f"/personagem/{kael.pk}/poderes-usuario/")
 
-        biblioteca = self.client.get(f"/personagem/{kael.pk}/poderes-usuario/").data
-        self.assertEqual(biblioteca[0]["personagens"], [kael.pk])
+        self.assertEqual([p["nome"] for p in resposta.data], ["Passo Sombrio"])
 
-        self.assertEqual(self.client.delete(url).status_code, status.HTTP_204_NO_CONTENT)
-        self.assertFalse(kael.poderes_usuario.exists())
+    def test_adicionar_da_biblioteca_copia_para_a_ficha(self):
+        kael = Personagem.objects.create(usuario=self.ana, nome="Kael")
+        origem = PoderUsuario.objects.create(usuario=self.ana, nome="Rajada", tag="Ataque", custo=2, descricao="<p>2d6</p>")
 
-    def test_nao_vincula_poder_de_outra_conta(self):
+        resposta = self.client.post(f"/personagem/{kael.pk}/poderes-usuario/{origem.pk}/copiar/")
+
+        self.assertEqual(resposta.status_code, status.HTTP_201_CREATED, resposta.data)
+        copia = Poder.objects.get(pk=resposta.data["id"])
+        self.assertEqual((copia.personagem, copia.nome, copia.tag, copia.custo), (kael, "Rajada", "Ataque", 2))
+        # É cópia: editar o poder da conta não muda a ficha.
+        origem.nome = "Rajada Maior"
+        origem.save()
+        copia.refresh_from_db()
+        self.assertEqual(copia.nome, "Rajada")
+
+    def test_nao_copia_poder_de_outra_conta(self):
         kael = Personagem.objects.create(usuario=self.ana, nome="Kael")
         alheio = PoderUsuario.objects.create(usuario=self.bia, nome="Alheio")
 
-        resposta = self.client.post(f"/personagem/{kael.pk}/poderes-usuario/{alheio.pk}/")
+        resposta = self.client.post(f"/personagem/{kael.pk}/poderes-usuario/{alheio.pk}/copiar/")
 
         self.assertEqual(resposta.status_code, status.HTTP_404_NOT_FOUND)
-        self.assertFalse(kael.poderes_usuario.exists())
+        self.assertFalse(kael.poderes.exists())
 
-    def test_patch_da_ficha_nao_grava_vinculo(self):
-        kael = Personagem.objects.create(usuario=self.ana, nome="Kael")
-        alheio = PoderUsuario.objects.create(usuario=self.bia, nome="Alheio")
-
-        self.client.patch(f"/personagem/{kael.pk}/", {"poderes_usuario": [alheio.pk]}, format="json")
-
-        self.assertFalse(kael.poderes_usuario.exists())
-
-    def test_mestre_ve_so_os_vinculados_da_ficha_do_jogador(self):
+    def test_mestre_adiciona_poder_da_conta_do_jogador_a_ficha_dele(self):
         irisa = Personagem.objects.create(usuario=self.bia, nome="Irisa")
         self.campanha.personagens.add(irisa)
-        usado = PoderUsuario.objects.create(usuario=self.bia, nome="Usado")
-        PoderUsuario.objects.create(usuario=self.bia, nome="Guardado")
-        irisa.poderes_usuario.add(usado)
+        do_jogador = PoderUsuario.objects.create(usuario=self.bia, nome="Do jogador")
 
-        resposta = self.client.get(f"/personagem/{irisa.pk}/poderes-usuario/")
+        self.assertEqual([p["nome"] for p in self.client.get(f"/personagem/{irisa.pk}/poderes-usuario/").data], ["Do jogador"])
+        resposta = self.client.post(f"/personagem/{irisa.pk}/poderes-usuario/{do_jogador.pk}/copiar/")
+        self.assertEqual(resposta.status_code, status.HTTP_201_CREATED)
 
-        self.assertEqual([p["nome"] for p in resposta.data], ["Usado"])
+    def test_jogador_que_so_le_a_ficha_nao_ve_a_conta_do_dono(self):
+        kael = Personagem.objects.create(usuario=self.ana, nome="Kael")
+        self.campanha.personagens.add(kael)
+        PoderUsuario.objects.create(usuario=self.ana, nome="Passo Sombrio")
+        self.client.force_authenticate(self.bia)
+
+        self.assertEqual(self.client.get(f"/personagem/{kael.pk}/poderes-usuario/").status_code, status.HTTP_403_FORBIDDEN)
 
 
 class PerfilPublicoTests(BasePerfil):

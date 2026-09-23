@@ -222,11 +222,13 @@ superusuário; o que é dos outros fica nas rotas `outros/` (aba "Outros usuári
 
 **Poderes da conta.** `PoderUsuario` tem os mesmos campos de `Poder` (os dois herdam
 de `PoderBase`), menos `tecnica` e `status`, que apontam para linhas de uma ficha só.
-A ficha não copia o poder: vincula (`Personagem.poderes_usuario`, M2M), então editar
-o poder no perfil muda em todas as fichas que o usam.
+Eles aparecem na Biblioteca da ficha ao lado dos poderes do Sistema e, como todo o
+resto da Biblioteca, são **copiados** para a ficha como um `Poder` comum (que então
+ganha técnica, status, bônus e "Usar"). Editar o poder da conta depois não altera as
+cópias.
 
-- `GET /personagem/<id>/poderes-usuario/` — para o dono da ficha, todos os poderes da conta (a Biblioteca), cada um com `personagens` (onde já está vinculado); para mestre/jogador da mesa, só os vinculados a esta ficha.
-- `POST|DELETE /personagem/<id>/poderes-usuario/<poder_id>/` — vincula/desvincula. Quem pode editar a ficha pode vincular, mas só poderes da conta do **dono da ficha**.
+- `GET /personagem/<id>/poderes-usuario/` — os poderes da conta do dono da ficha. Só para quem pode editar a ficha (dono ou mestre/moderador de uma campanha dela).
+- `POST /personagem/<id>/poderes-usuario/<poder_id>/copiar/` — copia para a ficha. O poder precisa ser da conta do **dono da ficha**.
 
 **Mural do perfil.** Notas em perfil usam o mesmo `/campanha/notas/` com
 `content_type=usuario`. Escreve e lê quem divide campanha com o dono do perfil;

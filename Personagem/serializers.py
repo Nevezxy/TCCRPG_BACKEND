@@ -90,10 +90,7 @@ class PersonagemSerializer(SincronizaSistemasMixin, CloudinaryUrlSerializerMixin
     class Meta:
         model = Personagem
         fields = "__all__"
-        # `poderes_usuario` só muda pelas rotas de vínculo, que checam se o
-        # poder é do dono da ficha — gravável aqui, um PATCH poderia vincular
-        # o poder da conta de outra pessoa.
-        read_only_fields = ("usuario", "poderes_usuario")
+        read_only_fields = ("usuario",)
 
 
 class StatusSerializer(ValorFinalMixin, serializers.ModelSerializer):
@@ -242,17 +239,9 @@ class PoderSerializer(CloudinaryUrlSerializerMixin, serializers.ModelSerializer)
 
 
 class PoderUsuarioSerializer(CloudinaryUrlSerializerMixin, serializers.ModelSerializer):
-    """
-    Poder da conta (ver `PoderUsuario`). `personagens` diz em quais fichas
-    do dono ele está vinculado — é o "em 3 personagens" do perfil e o que a
-    Biblioteca da ficha usa para marcar "já vinculado". Somente leitura: o
-    vínculo muda pelas rotas `personagem/<id>/poderes-usuario/<poder_id>/`,
-    que conferem a posse dos dois lados.
-    """
+    """Poder da conta (ver `PoderUsuario`)."""
 
     media_fields = ["midia"]
-
-    personagens = serializers.PrimaryKeyRelatedField(many=True, read_only=True)
 
     class Meta:
         model = PoderUsuario

@@ -100,11 +100,6 @@ class Personagem(Versionado):
     # 0019 popula `sistemas` a partir de `sistema`.
     sistema = models.ForeignKey(Sistema, on_delete=models.SET_NULL, related_name='personagens', blank=True, null=True)
     sistemas = models.ManyToManyField(Sistema, related_name='personagens_bibliotecas', blank=True)
-
-    # Poderes da CONTA do dono que esta ficha usa (ver `PoderUsuario`). Só
-    # muda pelas rotas `.../poderes-usuario/<id>/`, que conferem se o poder
-    # é mesmo do dono da ficha — por isso é somente leitura no serializer.
-    poderes_usuario = models.ManyToManyField('PoderUsuario', related_name='personagens', blank=True)
     
     criado_em = models.DateTimeField(auto_now_add=True)
     atualizado_em = models.DateTimeField(auto_now=True)
@@ -293,11 +288,12 @@ class Poder(PoderBase):
 
 class PoderUsuario(PoderBase):
     """
-    Poder cadastrado na CONTA, não numa ficha: aparece na Biblioteca de
-    todos os personagens do dono, e cada personagem escolhe quais usa por
-    `Personagem.poderes_usuario` (M2M). É um VÍNCULO, não uma cópia —
-    editar o poder no perfil muda em todas as fichas que o usam, e apagar
-    aqui tira de todas.
+    Poder cadastrado na CONTA, não numa ficha: aparece na Biblioteca (botão
+    flutuante da ficha) de todos os personagens do dono, ao lado dos poderes
+    do Sistema, e "Adicionar" o COPIA para a ficha como um `Poder` comum —
+    o mesmo modelo de toda a Biblioteca. A cópia ganha técnica, status,
+    bônus e "Usar" da ficha, e editar o poder da conta depois não mexe nas
+    fichas que já o copiaram.
 
     `usuario` é o que faz `IsOwnerOrAdmin` reconhecer o dono sem regra nova
     (ramo "objeto com `usuario`" de `Usuario/permissions.py`).

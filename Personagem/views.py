@@ -14,6 +14,8 @@ from .serializers import *
 from rest_framework.permissions import IsAuthenticated
 from rest_framework.decorators import permission_classes
 from Usuario.utils import check_object_permission
+from Usuario.permissions import _pode_acessar_personagem
+from Midia.services import copiar_ajuste
 
 
 @extend_schema(
@@ -1923,19 +1925,27 @@ def calculos_ficha(request, personagem_id):
 
 
 # ---------------------------------------------------------------------------
-# PODERES DA CONTA vinculados à ficha (ver `PoderUsuario`)
+# PODERES DA CONTA na Biblioteca da ficha (ver `PoderUsuario`)
 # ---------------------------------------------------------------------------
+
+def _pode_editar_ficha(request, personagem):
+    """Mesma régua de "adicionar da Biblioteca" do Sistema: quem pode EDITAR
+    a ficha (dono, ou mestre/moderador de uma campanha dela)."""
+    return (
+        request.user.is_superuser
+        or personagem.usuario_id == request.user.id
+        or _pode_acessar_personagem(personagem, request.user, is_safe=False)
+    )
+
 
 @extend_schema(
     methods=["GET"],
-    operation_id="listar_poderes_usuario_personagem",
+    operation_id="listar_poderes_usuario_biblioteca",
     responses=PoderUsuarioSerializer(many=True),
     description=(
-        "Para o DONO da ficha: todos os poderes da conta dele (a Biblioteca), "
-        "cada um com `personagens` dizendo onde já está vinculado. Para quem "
-        "só tem acesso à ficha (mestre/jogador da mesa): apenas os poderes "
-        "vinculados a este personagem — a conta de outra pessoa não é "
-        "listável por tabela."
+        "Os poderes da CONTA do dono desta ficha, para a Biblioteca. Só para "
+        "quem pode editar a ficha (dono ou mestre/moderador de uma campanha "
+        "dela) — é quem pode adicionar algo da Biblioteca a ela."
     ),
 )
 @api_view(["GET"])
@@ -1951,45 +1961,30 @@ def personagem_poderes_usuario(request, personagem_id):
             status=status.HTTP_404_NOT_FOUND
         )
 
-    check_object_permission(request, personagem)
+    if not _pode_editar_ficha(request, personagem):
+        return Response(
+            {"erro": "Você não pode adicionar poderes a esta ficha."},
+            status=status.HTTP_403_FORBIDDEN
+        )
 
-    if personagem.usuario_id == request.user.id:
-        poderes = PoderUsuario.objects.filter(usuario=request.user)
-    else:
-        poderes = personagem.poderes_usuario.all()
-
-    serializer = PoderUsuarioSerializer(
-        poderes.prefetch_related("personagens").order_by("nome"), many=True
-    )
-
-    return Response(serializer.data)
+    poderes = PoderUsuario.objects.filter(usuario_id=personagem.usuario_id).order_by("nome")
+    return Response(PoderUsuarioSerializer(poderes, many=True).data)
 
 
 @extend_schema(
     methods=["POST"],
-    operation_id="vincular_poder_usuario",
+    operation_id="copiar_poder_usuario",
     request=None,
-    responses=PoderUsuarioSerializer,
+    responses=PoderSerializer,
 )
-@extend_schema(
-    methods=["DELETE"],
-    operation_id="desvincular_poder_usuario",
-    request=None,
-    responses=None,
-)
-@api_view(["POST", "DELETE"])
+@api_view(["POST"])
 @permission_classes([IsAuthenticated])
-def personagem_poder_usuario_vinculo(request, personagem_id, poder_id):
+def copiar_poder_usuario(request, personagem_id, poder_id):
     """
-    Liga (POST) ou desliga (DELETE) um poder da conta desta ficha. Idempotente
-    nos dois sentidos: vincular o que já está vinculado não duplica (M2M), e
-    desvincular o que não está não é erro.
-
-    Quem pode: quem pode EDITAR a ficha (dono, ou mestre/moderador de uma
-    campanha dela) — `check_object_permission` num método não seguro. O
-    poder, porém, precisa ser da conta do DONO da ficha: o mestre consegue
-    ligar à ficha de um jogador um poder que o jogador cadastrou, nunca um
-    da própria conta do mestre.
+    Copia um poder da conta para a ficha como um `Poder` comum — o mesmo
+    que `Sistema/views.py::copiar_poder_sistema` faz com o catálogo. O poder
+    precisa ser da conta do DONO da ficha: o mestre adiciona à ficha de um
+    jogador um poder que o jogador cadastrou, nunca um da própria conta.
     """
 
     try:
@@ -2004,7 +1999,7 @@ def personagem_poder_usuario_vinculo(request, personagem_id, poder_id):
     check_object_permission(request, personagem)
 
     try:
-        poder = PoderUsuario.objects.get(pk=poder_id, usuario_id=personagem.usuario_id)
+        origem = PoderUsuario.objects.get(pk=poder_id, usuario_id=personagem.usuario_id)
 
     except PoderUsuario.DoesNotExist:
         return Response(
@@ -2012,9 +2007,15 @@ def personagem_poder_usuario_vinculo(request, personagem_id, poder_id):
             status=status.HTTP_404_NOT_FOUND
         )
 
-    if request.method == "POST":
-        personagem.poderes_usuario.add(poder)
-        return Response(PoderUsuarioSerializer(poder).data, status=status.HTTP_201_CREATED)
+    poder = Poder.objects.create(
+        personagem=personagem,
+        midia=origem.midia or "",
+        tag=origem.tag,
+        nome=origem.nome,
+        descricao=origem.descricao,
+        custo=origem.custo,
+        valor_final=origem.valor_final,
+    )
+    copiar_ajuste(origem, poder, ["midia"])
 
-    personagem.poderes_usuario.remove(poder)
-    return Response(status=status.HTTP_204_NO_CONTENT)
+    return Response(PoderSerializer(poder).data, status=status.HTTP_201_CREATED)
