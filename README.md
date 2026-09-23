@@ -200,6 +200,33 @@ seguintes endpoints (prefixo `/usuario/`):
 | `POST` | `/usuario/refresh/` | Troca um `refresh` token válido por um novo `access` token. Público. |
 | `GET` | `/usuario/me/` | Retorna os dados do usuário autenticado. Requer autenticação. |
 
+### Perfil do usuário (`/usuario/`)
+
+Tudo sob `me/` é sempre do usuário logado — não há id na URL para trocar.
+
+| Método | Endpoint | Descrição |
+|---|---|---|
+| `GET` | `/usuario/me/` | Perfil completo: `foto`, `banner` (+ `*_ajuste`), `descricao`, `cor_perfil` (`#rrggbb`), `links_sociais` (`[{rotulo, url}]`, até 6, só `http(s)://`), `data_atualizacao`, `email` e `totais` (`personagens`, `campanhas`, `poderes`). |
+| `PATCH` | `/usuario/me/` | Edita o próprio perfil. JSON ou multipart (para `foto`/`banner`; em multipart, `links_sociais` vai como string JSON). `username` é somente leitura. |
+| `GET` | `/usuario/me/personagens/` | Personagens do usuário (mais recentes primeiro). |
+| `GET` | `/usuario/me/campanhas/` | Campanhas em que é mestre ou jogador, com `papel`: `mestre`, `moderador` ou `jogador`. |
+| `GET\|POST` | `/usuario/me/poderes/` | Poderes da conta (`PoderUsuario`). |
+| `GET\|PUT\|PATCH\|DELETE` | `/usuario/me/poderes/<id>/` | Um poder da conta. Só o dono. |
+| `GET` | `/usuario/<id>/` | Perfil de outro usuário, sem e-mail. Só para quem divide alguma campanha com ele (404 para os demais). |
+
+**Poderes da conta.** `PoderUsuario` tem os mesmos campos de `Poder` (os dois herdam
+de `PoderBase`), menos `tecnica` e `status`, que apontam para linhas de uma ficha só.
+A ficha não copia o poder: vincula (`Personagem.poderes_usuario`, M2M), então editar
+o poder no perfil muda em todas as fichas que o usam.
+
+- `GET /personagem/<id>/poderes-usuario/` — para o dono da ficha, todos os poderes da conta (a Biblioteca), cada um com `personagens` (onde já está vinculado); para mestre/jogador da mesa, só os vinculados a esta ficha.
+- `POST|DELETE /personagem/<id>/poderes-usuario/<poder_id>/` — vincula/desvincula. Quem pode editar a ficha pode vincular, mas só poderes da conta do **dono da ficha**.
+
+**Mural do perfil.** Notas em perfil usam o mesmo `/campanha/notas/` com
+`content_type=usuario`. Escreve e lê quem divide campanha com o dono do perfil;
+o dono pode remover qualquer nota do próprio mural. Notas de perfil não aceitam
+`personagem` (quem fala é o usuário).
+
 Todas as demais rotas do projeto exigem o header:
 
 ```

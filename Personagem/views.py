@@ -1920,3 +1920,101 @@ def calculos_ficha(request, personagem_id):
     ).data
 
     return Response(dados)
+
+
+# ---------------------------------------------------------------------------
+# PODERES DA CONTA vinculados à ficha (ver `PoderUsuario`)
+# ---------------------------------------------------------------------------
+
+@extend_schema(
+    methods=["GET"],
+    operation_id="listar_poderes_usuario_personagem",
+    responses=PoderUsuarioSerializer(many=True),
+    description=(
+        "Para o DONO da ficha: todos os poderes da conta dele (a Biblioteca), "
+        "cada um com `personagens` dizendo onde já está vinculado. Para quem "
+        "só tem acesso à ficha (mestre/jogador da mesa): apenas os poderes "
+        "vinculados a este personagem — a conta de outra pessoa não é "
+        "listável por tabela."
+    ),
+)
+@api_view(["GET"])
+@permission_classes([IsAuthenticated])
+def personagem_poderes_usuario(request, personagem_id):
+
+    try:
+        personagem = Personagem.objects.get(pk=personagem_id)
+
+    except Personagem.DoesNotExist:
+        return Response(
+            {"erro": "Personagem não encontrado."},
+            status=status.HTTP_404_NOT_FOUND
+        )
+
+    check_object_permission(request, personagem)
+
+    if personagem.usuario_id == request.user.id:
+        poderes = PoderUsuario.objects.filter(usuario=request.user)
+    else:
+        poderes = personagem.poderes_usuario.all()
+
+    serializer = PoderUsuarioSerializer(
+        poderes.prefetch_related("personagens").order_by("nome"), many=True
+    )
+
+    return Response(serializer.data)
+
+
+@extend_schema(
+    methods=["POST"],
+    operation_id="vincular_poder_usuario",
+    request=None,
+    responses=PoderUsuarioSerializer,
+)
+@extend_schema(
+    methods=["DELETE"],
+    operation_id="desvincular_poder_usuario",
+    request=None,
+    responses=None,
+)
+@api_view(["POST", "DELETE"])
+@permission_classes([IsAuthenticated])
+def personagem_poder_usuario_vinculo(request, personagem_id, poder_id):
+    """
+    Liga (POST) ou desliga (DELETE) um poder da conta desta ficha. Idempotente
+    nos dois sentidos: vincular o que já está vinculado não duplica (M2M), e
+    desvincular o que não está não é erro.
+
+    Quem pode: quem pode EDITAR a ficha (dono, ou mestre/moderador de uma
+    campanha dela) — `check_object_permission` num método não seguro. O
+    poder, porém, precisa ser da conta do DONO da ficha: o mestre consegue
+    ligar à ficha de um jogador um poder que o jogador cadastrou, nunca um
+    da própria conta do mestre.
+    """
+
+    try:
+        personagem = Personagem.objects.get(pk=personagem_id)
+
+    except Personagem.DoesNotExist:
+        return Response(
+            {"erro": "Personagem não encontrado."},
+            status=status.HTTP_404_NOT_FOUND
+        )
+
+    check_object_permission(request, personagem)
+
+    try:
+        poder = PoderUsuario.objects.get(pk=poder_id, usuario_id=personagem.usuario_id)
+
+    except PoderUsuario.DoesNotExist:
+        return Response(
+            {"erro": "Poder não encontrado entre os poderes da conta do dono desta ficha."},
+            status=status.HTTP_404_NOT_FOUND
+        )
+
+    if request.method == "POST":
+        personagem.poderes_usuario.add(poder)
+        return Response(PoderUsuarioSerializer(poder).data, status=status.HTTP_201_CREATED)
+
+    personagem.poderes_usuario.remove(poder)
+    return Response(status=status.HTTP_204_NO_CONTENT)

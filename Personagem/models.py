@@ -100,6 +100,11 @@ class Personagem(Versionado):
     # 0019 popula `sistemas` a partir de `sistema`.
     sistema = models.ForeignKey(Sistema, on_delete=models.SET_NULL, related_name='personagens', blank=True, null=True)
     sistemas = models.ManyToManyField(Sistema, related_name='personagens_bibliotecas', blank=True)
+
+    # Poderes da CONTA do dono que esta ficha usa (ver `PoderUsuario`). Só
+    # muda pelas rotas `.../poderes-usuario/<id>/`, que conferem se o poder
+    # é mesmo do dono da ficha — por isso é somente leitura no serializer.
+    poderes_usuario = models.ManyToManyField('PoderUsuario', related_name='personagens', blank=True)
     
     criado_em = models.DateTimeField(auto_now_add=True)
     atualizado_em = models.DateTimeField(auto_now=True)
@@ -253,21 +258,59 @@ class Tecnica(models.Model):
     def __str__(self):
         return f"{self.nome} ({self.personagem.nome})"
 
-class Poder(models.Model):
-    personagem = models.ForeignKey(Personagem, on_delete=models.CASCADE, related_name='poderes')
-    tecnica = models.ForeignKey(Tecnica, on_delete=models.SET_NULL, related_name='poderes', blank=True, null=True)
+class PoderBase(models.Model):
+    """
+    O que um poder É, independente de onde mora: os campos que `Poder` (da
+    ficha) e `PoderUsuario` (da conta) têm em comum. Herança ABSTRATA de
+    propósito — não cria tabela nem muda a de `Poder` (a migration que
+    acompanha esta extração é vazia); só garante que um campo novo no poder
+    chegue aos dois de uma vez, em vez de ser lembrado duas vezes.
+
+    `tecnica` e `status` ficam de fora: apontam para linhas de UMA ficha, e
+    um poder da conta é compartilhado por todas.
+    """
     midia = CloudinaryField('Mídia_poder', blank=True)
     tag = models.CharField(max_length=100, blank=True)
     nome = models.CharField(max_length=100)
     descricao = models.TextField(blank=True)
-    status = models.ForeignKey(Status, on_delete=models.SET_NULL, related_name='poderes', blank=True, null=True)
     custo = models.IntegerField(default=0)
     # Digitado pelo jogador (ver `Item.valor_final`). Fica em `Poder` e
     # `Habilidade` o herda — uma coluna para os dois, como em `Item`.
     valor_final = models.IntegerField(default=0, db_default=0)
+
+    class Meta:
+        abstract = True
+
+
+class Poder(PoderBase):
+    personagem = models.ForeignKey(Personagem, on_delete=models.CASCADE, related_name='poderes')
+    tecnica = models.ForeignKey(Tecnica, on_delete=models.SET_NULL, related_name='poderes', blank=True, null=True)
+    status = models.ForeignKey(Status, on_delete=models.SET_NULL, related_name='poderes', blank=True, null=True)
     
     def __str__(self):
         return f"{self.nome} ({self.personagem.nome})"
+
+
+class PoderUsuario(PoderBase):
+    """
+    Poder cadastrado na CONTA, não numa ficha: aparece na Biblioteca de
+    todos os personagens do dono, e cada personagem escolhe quais usa por
+    `Personagem.poderes_usuario` (M2M). É um VÍNCULO, não uma cópia —
+    editar o poder no perfil muda em todas as fichas que o usam, e apagar
+    aqui tira de todas.
+
+    `usuario` é o que faz `IsOwnerOrAdmin` reconhecer o dono sem regra nova
+    (ramo "objeto com `usuario`" de `Usuario/permissions.py`).
+    """
+    usuario = models.ForeignKey(settings.AUTH_USER_MODEL, on_delete=models.CASCADE, related_name='poderes_usuario')
+    criado_em = models.DateTimeField(auto_now_add=True)
+    atualizado_em = models.DateTimeField(auto_now=True)
+
+    class Meta:
+        ordering = ["nome"]
+
+    def __str__(self):
+        return f"{self.nome} ({self.usuario})"
     
 class Habilidade(Poder):
     nivel = models.PositiveIntegerField(default=1)

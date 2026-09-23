@@ -6,4 +6,6 @@ from .models import Usuario
 
 @admin.register(Usuario)
 class UsuarioAdmin(UserAdmin):
-    pass
+    fieldsets = UserAdmin.fieldsets + (
+        ("Perfil", {"fields": ("foto", "banner", "descricao", "cor_perfil", "links_sociais")}),
+    )

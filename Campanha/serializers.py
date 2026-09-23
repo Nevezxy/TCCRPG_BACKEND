@@ -42,6 +42,8 @@ from .models import (
 from Personagem.models import Personagem
 from Personagem.serializers import CloudinaryUrlSerializerMixin  # ajuste o import conforme seu projeto
 from Midia.serializers import ajustes_do_objeto
+from Midia.services import url_de
+from Usuario.models import Usuario
 from . import combate as _combate
 from Sistema.serializers import SincronizaSistemasMixin
 
@@ -114,6 +116,20 @@ class UsuarioResumoSerializer(serializers.Serializer):
     id = serializers.IntegerField()
     username = serializers.CharField()
     first_name = serializers.CharField()
+    # Avatar do perfil (ver `Usuario.foto`) — é o que liga o card do jogador
+    # na campanha ao perfil dele. `cor_perfil` é a cor que ele escolheu.
+    foto = serializers.SerializerMethodField()
+    foto_ajuste = serializers.SerializerMethodField()
+    cor_perfil = serializers.CharField()
+
+    def get_foto(self, obj) -> str | None:
+        return url_de(obj.foto)
+
+    @extend_schema_field(serializers.JSONField(allow_null=True))
+    def get_foto_ajuste(self, obj):
+        if not obj.foto:
+            return None
+        return ajustes_do_objeto(self, obj, ["foto"]).get("foto")
 
 
 class CampanhaPersonagemResumoSerializer(serializers.Serializer):
@@ -193,6 +209,26 @@ class CampanhaSerializer(SincronizaSistemasMixin, CloudinaryUrlSerializerMixin, 
         ).data
 
 
+class CampanhaPerfilSerializer(CampanhaSerializer):
+    """
+    Campanha vista do perfil de quem a lista (`GET /usuario/me/campanhas/`):
+    o mesmo corpo do `CampanhaSerializer` mais o `papel` do usuário nela,
+    que é o que o card usa para o selo de Mestre/Moderador/Jogador. Precisa
+    do `request` no context.
+    """
+
+    papel = serializers.SerializerMethodField()
+
+    def get_papel(self, obj) -> str:
+        user = self.context["request"].user
+        if obj.mestre_id == user.id:
+            return "mestre"
+        # `.all()` e não `.filter()`: aproveita o prefetch da listagem.
+        if any(m.pk == user.id for m in obj.moderadores.all()):
+            return "moderador"
+        return "jogador"
+
+
 # ---------------------------------------------------------------------------
 # Objetos "notáveis"/"conectáveis" — modelos aos quais uma Nota pode ser
 # anexada, ou que podem participar de uma Conexao. Mantém a superfície de
@@ -208,6 +244,10 @@ _MODELOS_NOTAVEIS = [
     ItemCampanha, ArmaCampanha, ArmaduraCampanha,
     TecnicaCampanha, PoderCampanha, HabilidadeCampanha,
     Personagem,
+    # Mural do perfil: notas que um jogador deixa no perfil de outro. Quem
+    # pode ver/escrever é decidido por `usuario_pode_ver_objeto` (divide
+    # campanha com o dono do perfil).
+    Usuario,
 ]
 
 
@@ -221,6 +261,12 @@ def campanhas_do_objeto_notavel(objeto):
     """
     if isinstance(objeto, Campanha):
         return [objeto]
+    # Um perfil não pertence a campanha nenhuma. Sem esta saída, o Usuario
+    # cairia no `hasattr(objeto, "campanhas")` abaixo (M2M reverso de
+    # `Campanha.jogadores`) e o mestre de QUALQUER mesa do dono do perfil
+    # ganharia poder de moderar o mural dele.
+    if isinstance(objeto, Usuario):
+        return []
     if hasattr(objeto, "campanha_id"):
         return [objeto.campanha]
     if hasattr(objeto, "campanhas"):
@@ -892,13 +938,18 @@ class NotaSerializer(serializers.ModelSerializer):
                 "cor": _cor_identificacao(f"personagem:{obj.personagem_id}"),
             }
 
+        # Sem personagem, quem fala é o usuário — e agora ele tem foto e cor
+        # de perfil próprias (ver `Usuario`), que valem mais que a cor
+        # derivada do id.
+        usuario = obj.usuario
+        foto = url_de(usuario.foto)
         return {
             "tipo": "usuario",
             "id": obj.usuario_id,
-            "nome": obj.usuario.first_name or obj.usuario.username,
-            "foto": None,
-            "foto_ajuste": None,
-            "cor": _cor_identificacao(f"usuario:{obj.usuario_id}"),
+            "nome": usuario.first_name or usuario.username,
+            "foto": foto,
+            "foto_ajuste": ajustes_do_objeto(self, usuario, ["foto"]).get("foto") if foto else None,
+            "cor": usuario.cor_perfil or _cor_identificacao(f"usuario:{obj.usuario_id}"),
         }
 
     def get_objeto_nome(self, obj):
@@ -932,6 +983,11 @@ class NotaSerializer(serializers.ModelSerializer):
                 )
 
         personagem = attrs.get("personagem")
+
+        if personagem is not None and isinstance(objeto, Usuario):
+            raise serializers.ValidationError(
+                "Notas de perfil são escritas por você, não por um personagem."
+            )
 
         if personagem is not None:
             request = self.context.get("request")
