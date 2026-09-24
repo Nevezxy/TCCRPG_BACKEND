@@ -2953,6 +2953,104 @@ def escudo_ordem(request, pk):
     return Response({"ordem": ordem})
 
 
+# Teto de `Personagem.dinheiro` (DecimalField max_digits=10, 2 casas).
+_DINHEIRO_MAX = Decimal("99999999.99")
+
+
+@extend_schema(
+    methods=["POST"],
+    operation_id="recompensas_campanha",
+    request={
+        "application/json": {
+            "type": "object",
+            "properties": {
+                "personagens": {"type": "array", "items": {"type": "integer"}},
+                "dinheiro": {"type": "string", "example": "150.00"},
+                "xp": {"type": "integer"},
+            },
+            "required": ["personagens"],
+        }
+    },
+    responses=None,
+)
+@api_view(["POST"])
+@permission_classes([IsAuthenticated])
+def recompensas_campanha(request, pk):
+    """
+    Recompensas do Escudo do Mestre: SOMA `dinheiro` e `xp` ao que cada
+    personagem escolhido já tem — nunca substitui.
+
+    As linhas são travadas (`select_for_update`) e a soma é feita sobre o
+    valor lido já com o lock: uma compra na Loja ou um PATCH do próprio
+    jogador no mesmo instante não se perde nem é perdido.
+
+    Tudo ou nada: um personagem de fora da campanha, ou um dinheiro que
+    estouraria o limite da coluna, recusa a recompensa inteira — ninguém
+    recebe pela metade.
+
+    Devolve dinheiro e XP finais de cada um, para a tela atualizar as fichas
+    em cache sem recarregá-las.
+    """
+    campanha, erro = _busca_campanha_do_participante(request, pk)
+    if erro:
+        return erro
+    erro = _exige_mestre(request, campanha)
+    if erro:
+        return erro
+
+    dados = request.data if isinstance(request.data, dict) else {}
+    ids = dados.get("personagens")
+    if (
+        not isinstance(ids, list)
+        or not ids
+        or any(not isinstance(i, int) or isinstance(i, bool) for i in ids)
+    ):
+        return Response({"personagens": ["Escolha ao menos um personagem."]}, status=status.HTTP_400_BAD_REQUEST)
+    ids = list(dict.fromkeys(ids))
+
+    try:
+        dinheiro = Decimal(str(dados.get("dinheiro") or "0")).quantize(Decimal("0.01"))
+    except (InvalidOperation, ValueError):
+        return Response({"dinheiro": ["Informe um valor de dinheiro válido."]}, status=status.HTTP_400_BAD_REQUEST)
+    xp = dados.get("xp") or 0
+    if not isinstance(xp, int) or isinstance(xp, bool):
+        return Response({"xp": ["Informe a XP como um número inteiro."]}, status=status.HTTP_400_BAD_REQUEST)
+
+    if dinheiro < 0 or xp < 0:
+        return Response({"erro": "Recompensas não podem ser negativas."}, status=status.HTTP_400_BAD_REQUEST)
+    if dinheiro == 0 and xp == 0:
+        return Response({"erro": "Informe um valor de dinheiro ou de XP."}, status=status.HTTP_400_BAD_REQUEST)
+
+    da_campanha = set(campanha.personagens.values_list("id", flat=True))
+    estranhos = [i for i in ids if i not in da_campanha]
+    if estranhos:
+        return Response(
+            {"personagens": [f"Personagens que não estão nesta campanha: {estranhos}."]},
+            status=status.HTTP_400_BAD_REQUEST,
+        )
+
+    with transaction.atomic():
+        personagens = list(Personagem.objects.select_for_update().filter(pk__in=ids).order_by("pk"))
+        estouro = [p.nome for p in personagens if p.dinheiro + dinheiro > _DINHEIRO_MAX]
+        if estouro:
+            transaction.set_rollback(True)
+            return Response(
+                {"dinheiro": [f"Ultrapassaria o limite de dinheiro de: {', '.join(estouro)}."]},
+                status=status.HTTP_400_BAD_REQUEST,
+            )
+        for personagem in personagens:
+            personagem.dinheiro += dinheiro
+            personagem.xp += xp
+            personagem.save(update_fields=["dinheiro", "xp"])
+
+    return Response({
+        "personagens": [
+            {"id": p.pk, "nome": p.nome, "dinheiro": str(p.dinheiro), "xp": p.xp}
+            for p in personagens
+        ]
+    })
+
+
 # ---------------------------------------------------------------------------
 # "Fazer uma cópia" — duplicação de entidade de mundo e de pasta (com todo o
 # seu conteúdo). Reaproveita `_BUSCA_MODELOS` (tipo -> Modelo -> campo-título)

@@ -3037,3 +3037,79 @@ class ArvoreLoteTests(DuasCampanhasTestCase):
         self.autentica_como(self.jogador_a)
         response = self._post({"acao": "excluir", "itens": [{"tipo": "npc", "id": self.npc_a1.id}]})
         self.assertEqual(response.status_code, status.HTTP_403_FORBIDDEN)
+
+
+# ---------------------------------------------------------------------------
+# Recompensas do Escudo do Mestre
+# ---------------------------------------------------------------------------
+
+class RecompensasTests(DuasCampanhasTestCase):
+
+    def setUp(self):
+        super().setUp()
+        self.arkan = Personagem.objects.create(usuario=self.jogador_a, nome="Arkan", dinheiro="10.00", xp=5)
+        self.lira = Personagem.objects.create(usuario=self.jogador_a, nome="Lira")
+        self.campanha_a.personagens.add(self.arkan, self.lira)
+        self.estranho = Personagem.objects.create(usuario=self.jogador_b, nome="Estranho")
+        self.campanha_b.personagens.add(self.estranho)
+        self.url = f"/campanha/{self.campanha_a.id}/recompensas/"
+
+    def test_soma_ao_que_cada_um_ja_tem(self):
+        self.autentica_como(self.mestre_a)
+        resposta = self.client.post(
+            self.url, {"personagens": [self.arkan.id, self.lira.id], "dinheiro": "2.50", "xp": 100}, format="json"
+        )
+        self.assertEqual(resposta.status_code, status.HTTP_200_OK, resposta.data)
+        self.arkan.refresh_from_db()
+        self.lira.refresh_from_db()
+        self.assertEqual((str(self.arkan.dinheiro), self.arkan.xp), ("12.50", 105))
+        self.assertEqual((str(self.lira.dinheiro), self.lira.xp), ("2.50", 100))
+        self.assertEqual({p["id"]: p["xp"] for p in resposta.data["personagens"]}, {self.arkan.id: 105, self.lira.id: 100})
+
+    def test_so_xp(self):
+        self.autentica_como(self.mestre_a)
+        self.client.post(self.url, {"personagens": [self.lira.id], "xp": 30}, format="json")
+        self.lira.refresh_from_db()
+        self.assertEqual((str(self.lira.dinheiro), self.lira.xp), ("0.00", 30))
+
+    def test_jogador_nao_distribui(self):
+        self.autentica_como(self.jogador_a)
+        resposta = self.client.post(self.url, {"personagens": [self.arkan.id], "xp": 10}, format="json")
+        self.assertEqual(resposta.status_code, status.HTTP_403_FORBIDDEN)
+        self.arkan.refresh_from_db()
+        self.assertEqual(self.arkan.xp, 5)
+
+    def test_personagem_de_fora_recusa_tudo(self):
+        self.autentica_como(self.mestre_a)
+        resposta = self.client.post(
+            self.url, {"personagens": [self.arkan.id, self.estranho.id], "xp": 10}, format="json"
+        )
+        self.assertEqual(resposta.status_code, status.HTTP_400_BAD_REQUEST)
+        self.arkan.refresh_from_db()
+        self.assertEqual(self.arkan.xp, 5)
+
+    def test_recusa_vazio_e_negativo(self):
+        self.autentica_como(self.mestre_a)
+        for corpo in (
+            {"personagens": [], "xp": 1},
+            {"personagens": [self.arkan.id]},
+            {"personagens": [self.arkan.id], "xp": -3},
+            {"personagens": [self.arkan.id], "dinheiro": "abc"},
+        ):
+            resposta = self.client.post(self.url, corpo, format="json")
+            self.assertEqual(resposta.status_code, status.HTTP_400_BAD_REQUEST, corpo)
+
+    def test_estouro_do_limite_nao_entrega_a_ninguem(self):
+        self.lira.dinheiro = "99999999.00"
+        self.lira.save()
+        self.autentica_como(self.mestre_a)
+        resposta = self.client.post(
+            self.url, {"personagens": [self.arkan.id, self.lira.id], "dinheiro": "5.00"}, format="json"
+        )
+        self.assertEqual(resposta.status_code, status.HTTP_400_BAD_REQUEST)
+        self.arkan.refresh_from_db()
+        self.assertEqual(str(self.arkan.dinheiro), "10.00")
+
+    def test_xp_nasce_zerado(self):
+        novo = Personagem.objects.create(usuario=self.jogador_a, nome="Novo")
+        self.assertEqual(novo.xp, 0)

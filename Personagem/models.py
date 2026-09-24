@@ -85,6 +85,11 @@ class Personagem(Versionado):
     classe4 = models.CharField(max_length=40, default='combatente')
 
     dinheiro = models.DecimalField(default=0, max_digits=10, decimal_places=2)
+    # Experiência acumulada. Sobe pelas Recompensas do Escudo do Mestre
+    # (`Campanha/views.py::recompensas_campanha`), que SOMAM ao que já existe,
+    # e o jogador também pode ajustar na ficha. `db_default` pelo mesmo motivo
+    # de `peso_multiplica_quantidade`.
+    xp = models.PositiveIntegerField(default=0, db_default=0)
     anotacoes = models.TextField(blank=True)
     aparencia = models.TextField(blank=True)
     personalidade = models.TextField(blank=True)
