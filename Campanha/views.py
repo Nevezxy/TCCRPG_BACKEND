@@ -15,6 +15,7 @@ from Usuario.models import Usuario
 from Personagem.serializers import ArmaSerializer, ArmaduraSerializer, ItemSerializer, PersonagemSerializer
 
 from django.contrib.contenttypes.models import ContentType
+from django.core.exceptions import ObjectDoesNotExist
 from decimal import Decimal, InvalidOperation
 
 from django.db import IntegrityError, transaction
@@ -1935,6 +1936,54 @@ def evento_conexoes(request, evento_pk):
     operation_id="listar_pastas",
     responses=PastaSerializer(many=True),
 )
+def _pastas_ocultas_ids(campanha):
+    """
+    Ids das pastas que um JOGADOR não enxerga: as marcadas como ocultas e
+    todas as que estão dentro delas, em qualquer profundidade. Uma consulta
+    só, e a subida pelos pais é feita em memória (a árvore de uma campanha
+    tem dezenas de pastas, não milhares).
+    """
+    linhas = list(campanha.pastas.values_list("id", "pasta_pai_id", "visivel_para_jogadores"))
+    pai = {pk: pai_id for pk, pai_id, _ in linhas}
+    visivel = {pk: vis for pk, _, vis in linhas}
+
+    ocultas = set()
+    for pk in pai:
+        atual, vistos = pk, set()
+        while atual is not None and atual not in vistos:
+            if not visivel.get(atual, True):
+                ocultas.add(pk)
+                break
+            vistos.add(atual)
+            atual = pai.get(atual)
+    return ocultas
+
+
+def _pasta_da_campanha(campanha, valor):
+    """`valor` (id vindo do request, possivelmente texto/None) -> Pasta desta
+    campanha, ou None. Id inválido vira None — quem valida de verdade é o
+    serializer; aqui só se precisa do pai para escolher um nome livre."""
+    try:
+        pk = int(valor)
+    except (TypeError, ValueError):
+        return None
+    return Pasta.objects.filter(pk=pk, campanha=campanha).first()
+
+
+def _nome_pasta_livre(campanha, pai, base):
+    """`base` se estiver livre entre os irmãos; senão "base 2", "base 3"…"""
+    base = (base or "").strip() or "Nova pasta"
+    irmaos = set(
+        Pasta.objects.filter(campanha=campanha, pasta_pai=pai).values_list("nome", flat=True)
+    )
+    if base not in irmaos:
+        return base
+    n = 2
+    while f"{base} {n}" in irmaos:
+        n += 1
+    return f"{base} {n}"
+
+
 @extend_schema(
     methods=["POST"],
     operation_id="criar_pasta",
@@ -1961,6 +2010,11 @@ def pasta_lista(request, pk):
 
         pastas = campanha.pastas.all().order_by("pasta_pai_id", "ordem", "nome")
 
+        # Jogador não vê pasta oculta, nem nada que esteja dentro dela: o
+        # NOME da pasta já é spoiler ("Traição do Rei — sessão 8").
+        if not pode_gerenciar_campanha(campanha, request.user):
+            pastas = pastas.exclude(pk__in=_pastas_ocultas_ids(campanha))
+
         return Response(PastaSerializer(pastas, many=True).data)
 
     elif request.method == "POST":
@@ -1973,8 +2027,17 @@ def pasta_lista(request, pk):
         if erro:
             return erro
 
+        # Criar nunca falha por nome repetido: "Nova pasta" vira "Nova pasta
+        # 2", como no Finder/Explorer. Renomear e mover, ao contrário,
+        # recusam o conflito (ver `PastaSerializer.validate`) — ali o nome
+        # foi escolhido de propósito e trocá-lo por baixo dos panos surpreende.
+        dados = request.data.copy()
+        dados["nome"] = _nome_pasta_livre(
+            campanha, _pasta_da_campanha(campanha, dados.get("pasta_pai")), dados.get("nome")
+        )
+
         serializer = PastaSerializer(
-            data=request.data, context={"campanha": campanha}
+            data=dados, context={"campanha": campanha}
         )
 
         if serializer.is_valid():
@@ -2033,6 +2096,17 @@ def pasta_detalhe(request, pasta_pk):
     check_object_permission(request, pasta)
 
     if request.method == "GET":
+
+        # `check_object_permission` só olha a própria pasta; uma subpasta
+        # visível dentro de uma pasta oculta também não é do jogador.
+        if (
+            not pode_gerenciar_campanha(pasta.campanha, request.user)
+            and pasta.pk in _pastas_ocultas_ids(pasta.campanha)
+        ):
+            return Response(
+                {"erro": "Pasta não encontrada."},
+                status=status.HTTP_404_NOT_FOUND
+            )
 
         return Response(PastaSerializer(pasta).data)
 
@@ -2879,6 +2953,104 @@ def escudo_ordem(request, pk):
     return Response({"ordem": ordem})
 
 
+# Teto de `Personagem.dinheiro` (DecimalField max_digits=10, 2 casas).
+_DINHEIRO_MAX = Decimal("99999999.99")
+
+
+@extend_schema(
+    methods=["POST"],
+    operation_id="recompensas_campanha",
+    request={
+        "application/json": {
+            "type": "object",
+            "properties": {
+                "personagens": {"type": "array", "items": {"type": "integer"}},
+                "dinheiro": {"type": "string", "example": "150.00"},
+                "xp": {"type": "integer"},
+            },
+            "required": ["personagens"],
+        }
+    },
+    responses=None,
+)
+@api_view(["POST"])
+@permission_classes([IsAuthenticated])
+def recompensas_campanha(request, pk):
+    """
+    Recompensas do Escudo do Mestre: SOMA `dinheiro` e `xp` ao que cada
+    personagem escolhido já tem — nunca substitui.
+
+    As linhas são travadas (`select_for_update`) e a soma é feita sobre o
+    valor lido já com o lock: uma compra na Loja ou um PATCH do próprio
+    jogador no mesmo instante não se perde nem é perdido.
+
+    Tudo ou nada: um personagem de fora da campanha, ou um dinheiro que
+    estouraria o limite da coluna, recusa a recompensa inteira — ninguém
+    recebe pela metade.
+
+    Devolve dinheiro e XP finais de cada um, para a tela atualizar as fichas
+    em cache sem recarregá-las.
+    """
+    campanha, erro = _busca_campanha_do_participante(request, pk)
+    if erro:
+        return erro
+    erro = _exige_mestre(request, campanha)
+    if erro:
+        return erro
+
+    dados = request.data if isinstance(request.data, dict) else {}
+    ids = dados.get("personagens")
+    if (
+        not isinstance(ids, list)
+        or not ids
+        or any(not isinstance(i, int) or isinstance(i, bool) for i in ids)
+    ):
+        return Response({"personagens": ["Escolha ao menos um personagem."]}, status=status.HTTP_400_BAD_REQUEST)
+    ids = list(dict.fromkeys(ids))
+
+    try:
+        dinheiro = Decimal(str(dados.get("dinheiro") or "0")).quantize(Decimal("0.01"))
+    except (InvalidOperation, ValueError):
+        return Response({"dinheiro": ["Informe um valor de dinheiro válido."]}, status=status.HTTP_400_BAD_REQUEST)
+    xp = dados.get("xp") or 0
+    if not isinstance(xp, int) or isinstance(xp, bool):
+        return Response({"xp": ["Informe a XP como um número inteiro."]}, status=status.HTTP_400_BAD_REQUEST)
+
+    if dinheiro < 0 or xp < 0:
+        return Response({"erro": "Recompensas não podem ser negativas."}, status=status.HTTP_400_BAD_REQUEST)
+    if dinheiro == 0 and xp == 0:
+        return Response({"erro": "Informe um valor de dinheiro ou de XP."}, status=status.HTTP_400_BAD_REQUEST)
+
+    da_campanha = set(campanha.personagens.values_list("id", flat=True))
+    estranhos = [i for i in ids if i not in da_campanha]
+    if estranhos:
+        return Response(
+            {"personagens": [f"Personagens que não estão nesta campanha: {estranhos}."]},
+            status=status.HTTP_400_BAD_REQUEST,
+        )
+
+    with transaction.atomic():
+        personagens = list(Personagem.objects.select_for_update().filter(pk__in=ids).order_by("pk"))
+        estouro = [p.nome for p in personagens if p.dinheiro + dinheiro > _DINHEIRO_MAX]
+        if estouro:
+            transaction.set_rollback(True)
+            return Response(
+                {"dinheiro": [f"Ultrapassaria o limite de dinheiro de: {', '.join(estouro)}."]},
+                status=status.HTTP_400_BAD_REQUEST,
+            )
+        for personagem in personagens:
+            personagem.dinheiro += dinheiro
+            personagem.xp += xp
+            personagem.save(update_fields=["dinheiro", "xp"])
+
+    return Response({
+        "personagens": [
+            {"id": p.pk, "nome": p.nome, "dinheiro": str(p.dinheiro), "xp": p.xp}
+            for p in personagens
+        ]
+    })
+
+
 # ---------------------------------------------------------------------------
 # "Fazer uma cópia" — duplicação de entidade de mundo e de pasta (com todo o
 # seu conteúdo). Reaproveita `_BUSCA_MODELOS` (tipo -> Modelo -> campo-título)
@@ -3087,6 +3259,245 @@ def duplicar_pasta(request, pasta_pk):
     )
 
     return Response(PastaSerializer(nova).data, status=status.HTTP_201_CREATED)
+
+
+# ---------------------------------------------------------------------------
+# Árvore da aba Mundo — carga leve e ações em lote
+# ---------------------------------------------------------------------------
+
+# tipo -> (Modelo, campo_titulo) de tudo que aparece na árvore. Mesma lista
+# da busca, mais `podercampanha` — lá ele fica de fora para não duplicar
+# habilidades; aqui entra filtrado do mesmo jeito que `podercampanha_lista`.
+_ARVORE_MODELOS = {tipo: (modelo, campo) for tipo, modelo, campo in _BUSCA_MODELOS}
+_ARVORE_MODELOS["podercampanha"] = (PoderCampanha, "nome")
+
+_LOTE_MAX_ITENS = 500
+
+
+def _qs_arvore(tipo, modelo, campanha):
+    qs = modelo.objects.filter(campanha=campanha)
+    if tipo == "podercampanha":
+        qs = qs.filter(habilidadecampanha__isnull=True)
+    return qs
+
+
+@extend_schema(methods=["GET"], operation_id="arvore_campanha", responses=None)
+@api_view(["GET"])
+@permission_classes([IsAuthenticated])
+def arvore_campanha(request, pk):
+    """
+    Tudo o que a árvore da aba Mundo precisa para se desenhar — tipo, id,
+    nome, pasta, ordem, ícone, cor e visibilidade de cada entidade — numa
+    requisição só. Antes a árvore montava isso a partir das listagens
+    completas de cada tipo: 19 requisições, trazendo conteúdo, imagens e
+    campos que ela nunca mostra.
+
+    Jogador recebe só o que é visível, e uma entidade visível que está
+    dentro de uma pasta oculta aparece na raiz (`pasta: null`): mostrar a
+    entidade é decisão dela, esconder o nome da pasta é decisão da pasta.
+    """
+    campanha, erro = _busca_campanha_do_participante(request, pk)
+
+    if erro:
+        return erro
+
+    ocultas = set() if pode_gerenciar_campanha(campanha, request.user) else _pastas_ocultas_ids(campanha)
+
+    entidades = []
+    for tipo, (modelo, campo) in _ARVORE_MODELOS.items():
+        qs = _filtra_visiveis(request, campanha, _qs_arvore(tipo, modelo, campanha))
+        colunas = qs.values(
+            "id", campo, "pasta_id", "ordem", "icone", "cor",
+            "visivel_para_jogadores", "editavel_para_jogadores", "criado_em",
+        )
+        for linha in colunas:
+            pasta_id = linha["pasta_id"]
+            entidades.append({
+                "tipo": tipo,
+                "id": linha["id"],
+                "nome": linha[campo] or "",
+                "pasta": None if pasta_id in ocultas else pasta_id,
+                "ordem": linha["ordem"],
+                "icone": linha["icone"] or "",
+                "cor": linha["cor"] or "",
+                "visivel_para_jogadores": linha["visivel_para_jogadores"],
+                "editavel_para_jogadores": linha["editavel_para_jogadores"],
+                "criado_em": linha["criado_em"],
+            })
+
+    return Response({"entidades": entidades})
+
+
+def _erro_lote(mensagem, codigo=status.HTTP_400_BAD_REQUEST):
+    return Response({"erro": mensagem}, status=codigo)
+
+
+def _pastas_em_ciclo(novo_pai):
+    """True se o mapa `pasta -> pai` (já com as mudanças do lote) tem ciclo."""
+    for inicio in novo_pai:
+        atual, vistos = novo_pai.get(inicio), {inicio}
+        while atual is not None:
+            if atual in vistos:
+                return True
+            vistos.add(atual)
+            atual = novo_pai.get(atual)
+    return False
+
+
+@extend_schema(
+    methods=["POST"],
+    operation_id="arvore_lote",
+    request={
+        "application/json": {
+            "type": "object",
+            "properties": {
+                "acao": {"type": "string", "enum": ["mover", "visibilidade", "excluir"]},
+                "visivel": {"type": "boolean"},
+                "itens": {
+                    "type": "array",
+                    "items": {
+                        "type": "object",
+                        "properties": {
+                            "tipo": {"type": "string"},
+                            "id": {"type": "integer"},
+                            "pasta": {"type": "integer", "nullable": True},
+                            "ordem": {"type": "integer"},
+                        },
+                        "required": ["tipo", "id"],
+                    },
+                },
+            },
+            "required": ["acao", "itens"],
+        }
+    },
+    responses=None,
+)
+@api_view(["POST"])
+@permission_classes([IsAuthenticated])
+def arvore_lote(request, pk):
+    """
+    Ações da árvore sobre vários itens (pastas e entidades misturadas) numa
+    transação só:
+
+    - `mover`: cada item pode trazer `pasta` (destino; `null` = raiz — para
+      uma pasta, é o novo pai) e/ou `ordem`. Reordenar por arraste manda os
+      irmãos renumerados de uma vez, em vez de um PATCH por linha.
+    - `visibilidade`: aplica `visivel` a todos os itens.
+    - `excluir`: apaga todos. Pastas levam as subpastas junto (CASCADE); as
+      entidades de dentro vão para a raiz (SET_NULL).
+
+    Tudo ou nada: se um item é inválido, nada muda — a árvore do cliente,
+    que já se mexeu de forma otimista, só precisa desfazer um passo.
+    """
+    campanha, erro = _busca_campanha_do_participante(request, pk)
+
+    if erro:
+        return erro
+
+    erro = _exige_mestre(request, campanha)
+
+    if erro:
+        return erro
+
+    acao = request.data.get("acao")
+    itens = request.data.get("itens")
+
+    if acao not in ("mover", "visibilidade", "excluir"):
+        return _erro_lote("Ação inválida.")
+
+    if not isinstance(itens, list) or not itens:
+        return _erro_lote("Informe ao menos um item.")
+
+    if len(itens) > _LOTE_MAX_ITENS:
+        return _erro_lote(f"No máximo {_LOTE_MAX_ITENS} itens por vez.")
+
+    alvos = []
+    for item in itens:
+        if not isinstance(item, dict):
+            return _erro_lote("Item inválido.")
+        tipo = item.get("tipo")
+        if tipo == "pasta":
+            qs = Pasta.objects.filter(campanha=campanha)
+        elif tipo in _ARVORE_MODELOS:
+            modelo, _campo = _ARVORE_MODELOS[tipo]
+            qs = _qs_arvore(tipo, modelo, campanha)
+        else:
+            return _erro_lote("Tipo de item inválido.")
+        try:
+            alvos.append((tipo, qs.get(pk=item.get("id")), item))
+        except (ObjectDoesNotExist, ValueError, TypeError):
+            return _erro_lote("Item não encontrado nesta campanha.", status.HTTP_404_NOT_FOUND)
+
+    if acao == "visibilidade":
+        visivel = request.data.get("visivel")
+        if not isinstance(visivel, bool):
+            return _erro_lote("Informe `visivel` (true/false).")
+        with transaction.atomic():
+            for _tipo, obj, _item in alvos:
+                obj.visivel_para_jogadores = visivel
+                obj.save()
+        return Response({"atualizados": len(alvos)})
+
+    if acao == "excluir":
+        with transaction.atomic():
+            # Entidades antes das pastas: apagar uma pasta primeiro só
+            # desligaria as entidades dela (SET_NULL) para em seguida
+            # apagá-las — mesmo resultado, com UPDATEs à toa.
+            for tipo, obj, _item in sorted(alvos, key=lambda a: a[0] == "pasta"):
+                obj.delete()
+        return Response({"removidos": len(alvos)})
+
+    # --- mover ---
+    pastas = {p.pk: p for p in Pasta.objects.filter(campanha=campanha)}
+    novo_pai = {pasta_pk: p.pasta_pai_id for pasta_pk, p in pastas.items()}
+    mudancas = []
+
+    for tipo, obj, item in alvos:
+        mudanca = {}
+        if "pasta" in item:
+            destino = item["pasta"]
+            if destino is not None:
+                try:
+                    destino = int(destino)
+                except (TypeError, ValueError):
+                    return _erro_lote("Pasta de destino inválida.")
+                if destino not in pastas:
+                    return _erro_lote("A pasta de destino precisa pertencer a esta campanha.")
+            mudanca["pasta"] = destino
+            if tipo == "pasta":
+                novo_pai[obj.pk] = destino
+        if "ordem" in item:
+            ordem = item["ordem"]
+            if not isinstance(ordem, int) or isinstance(ordem, bool) or ordem < 0:
+                return _erro_lote("`ordem` precisa ser um inteiro maior ou igual a zero.")
+            mudanca["ordem"] = ordem
+        mudancas.append((tipo, obj, mudanca))
+
+    if _pastas_em_ciclo(novo_pai):
+        return _erro_lote(
+            "Não é possível mover uma pasta para dentro dela mesma ou de uma subpasta dela."
+        )
+
+    movidas = {obj.pk for tipo, obj, m in mudancas if tipo == "pasta" and "pasta" in m}
+    ocupados = {}
+    for pasta_pk, p in pastas.items():
+        ocupados.setdefault((novo_pai[pasta_pk], p.nome), []).append(pasta_pk)
+    for chave, ids in ocupados.items():
+        if len(ids) > 1 and movidas.intersection(ids):
+            return _erro_lote(f'Já existe uma pasta chamada "{chave[1]}" no destino.')
+
+    with transaction.atomic():
+        for tipo, obj, mudanca in mudancas:
+            if "pasta" in mudanca:
+                if tipo == "pasta":
+                    obj.pasta_pai_id = mudanca["pasta"]
+                else:
+                    obj.pasta_id = mudanca["pasta"]
+            if "ordem" in mudanca:
+                obj.ordem = mudanca["ordem"]
+            obj.save()
+
+    return Response({"atualizados": len(mudancas)})
 
 # ---------------------------------------------------------------------------
 # Entidades de mundo novas — CRUD gerado a partir de uma fábrica única

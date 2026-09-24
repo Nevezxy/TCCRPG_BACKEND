@@ -620,6 +620,19 @@ urlpatterns = [
         name="duplicar_pasta"
     ),
 
+    # Árvore da aba Mundo: carga leve de todas as entidades e ações em lote
+    path(
+        "<int:pk>/arvore/",
+        views.arvore_campanha,
+        name="arvore_campanha"
+    ),
+
+    path(
+        "<int:pk>/arvore/lote/",
+        views.arvore_lote,
+        name="arvore_lote"
+    ),
+
 
     # Tipos de conexão — vocabulário compartilhado (não aninhado em
     # campanha; ver TipoConexao em models.py)
@@ -670,6 +683,7 @@ urlpatterns = [
         name="escudo_campanha"
     ),
     path("<int:pk>/escudo/ordem/", views.escudo_ordem, name="escudo_ordem"),
+    path("<int:pk>/recompensas/", views.recompensas_campanha, name="recompensas_campanha"),
 
     # Combate do Escudo (iniciativa, PV de combate, turno). As mudanças
     # também chegam pelo WebSocket do Escudo — ver Campanha/combate.py.

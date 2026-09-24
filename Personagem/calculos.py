@@ -28,6 +28,11 @@ Entidades FOLHA (o número é digitado pelo jogador, não derivado):
     → a própria coluna `valor_final`. Na Armadura ela é mantida igual a
       `defesa` pelo `save()` do model.
 
+    Além dela, uma folha pode oferecer VÁRIOS bônus nomeados
+    (`BonusFornecido`: "+4 CA", "+2 DT"). Um bônus por entidade que aponta
+    para um deles (`Bonus.origem_fornecido`) vale o número daquela linha;
+    sem ele, vale o `valor_final` da origem, como sempre.
+
 Duas coisas que a ficha SEMPRE fez e continuam valendo:
 
   - `valor_temp` do Status NÃO entra no total. Ele é exibido à parte, entre
@@ -78,6 +83,7 @@ from .models import (
     Armadura,
     Atributo,
     Bonus,
+    BonusFornecido,
     Defesa,
     Habilidade,
     Item,
@@ -120,6 +126,12 @@ TIPOS_CALCULADOS = ("atributo", "status", "defesa", "pericia")
 TIPOS_BASE = tuple(tipo for tipo in MODELOS_ALVO if tipo not in TIPO_BASE)
 
 
+# Os tipos-FOLHA: o número é digitado, e só eles podem oferecer vários
+# bônus nomeados (`BonusFornecido`). Um Atributo/Defesa já é, ele mesmo, UM
+# valor — quem quer "+2 de Força e +1 de Destreza" usa duas origens.
+TIPOS_FORNECEDORES = ("item", "tecnica", "poder", "aprimoramento")
+
+
 def tipo_base(tipo):
     """Nome do tipo sob o qual os bônus daquele alvo são gravados."""
     return TIPO_BASE.get(tipo, tipo)
@@ -146,6 +158,28 @@ def personagem_de(obj):
         return pid
     personagem = getattr(obj, "personagem", None)
     return personagem.pk if personagem is not None else None
+
+
+def fornecidos_por_entidade(objetos):
+    """
+    `{(tipo_base, pk): [BonusFornecido, ...]}` de várias entidades numa
+    consulta por tipo — o que os serializers usam para publicar a lista de
+    bônus fornecidos de uma listagem inteira sem uma consulta por linha.
+    """
+    por_tipo = defaultdict(set)
+    for obj in objetos:
+        tipo, pk = chave_de(obj)
+        if tipo in TIPOS_FORNECEDORES and pk is not None:
+            por_tipo[tipo].add(pk)
+
+    # Toda entidade pedida ganha a sua entrada, mesmo sem bônus nenhum —
+    # quem guarda o resultado sabe que ela já foi consultada.
+    resultado = {(tipo, pk): [] for tipo, ids in por_tipo.items() for pk in ids}
+    for tipo, ids in por_tipo.items():
+        ct = ContentType.objects.get_for_model(MODELOS_ALVO[tipo])
+        for fornecido in BonusFornecido.objects.filter(content_type=ct, object_id__in=ids):
+            resultado[(tipo, fornecido.object_id)].append(fornecido)
+    return resultado
 
 
 # ---------------------------------------------------------------------------
@@ -373,7 +407,9 @@ class ContextoCalculo:
             ContentType.objects.get_for_model(MODELOS_ALVO[tipo]).id: tipo
             for tipo in MODELOS_ALVO
         }
-        for bonus in queryset:
+        # `origem_fornecido` junto: `valor_bonus` o lê para todo bônus que
+        # aponta para um bônus nomeado, e sem isto seria uma consulta cada.
+        for bonus in queryset.select_related("origem_fornecido"):
             tipo = tipos.get(bonus.content_type_id)
             if tipo is None:
                 continue
@@ -443,6 +479,11 @@ class ContextoCalculo:
             return bonus.valor
         if bonus.origem_content_type_id is None or bonus.origem_object_id is None:
             return 0
+        # Um dos bônus NOMEADOS da origem ("Postura Defensiva → +4 CA"): vale
+        # o que aquela linha diz, não o total da entidade.
+        if bonus.origem_fornecido_id is not None:
+            fornecido = bonus.origem_fornecido
+            return fornecido.valor if fornecido is not None else 0
         origem = self.objeto(bonus.origem_content_type.model, bonus.origem_object_id)
         if origem is None:
             return 0

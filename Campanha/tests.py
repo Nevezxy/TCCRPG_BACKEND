@@ -2841,3 +2841,275 @@ class ModeradorTests(DuasCampanhasTestCase):
 
         nomes = [c["nome"] for c in response.data["categorias"]]
         self.assertIn("Rascunho", nomes)
+
+
+# ---------------------------------------------------------------------------
+# Árvore da aba Mundo — visibilidade de pastas, nomes, carga leve e lote
+# ---------------------------------------------------------------------------
+
+class PastaVisibilidadeENomeTests(DuasCampanhasTestCase):
+
+    def setUp(self):
+        super().setUp()
+        self.segredo = Pasta.objects.create(
+            campanha=self.campanha_a, nome="Traição do Rei", visivel_para_jogadores=False
+        )
+        self.dentro = Pasta.objects.create(
+            campanha=self.campanha_a, nome="Pistas", pasta_pai=self.segredo
+        )
+        self.publica = Pasta.objects.create(campanha=self.campanha_a, nome="Cidades")
+
+    def test_jogador_nao_ve_pasta_oculta_nem_o_que_esta_dentro(self):
+        self.autentica_como(self.jogador_a)
+        response = self.client.get(f"/campanha/{self.campanha_a.id}/pastas/")
+        nomes = {p["nome"] for p in response.data}
+        self.assertEqual(nomes, {"Cidades"})
+
+    def test_mestre_ve_todas_as_pastas(self):
+        self.autentica_como(self.mestre_a)
+        response = self.client.get(f"/campanha/{self.campanha_a.id}/pastas/")
+        self.assertEqual(len(response.data), 3)
+
+    def test_jogador_nao_abre_subpasta_de_pasta_oculta(self):
+        self.autentica_como(self.jogador_a)
+        response = self.client.get(f"/campanha/pastas/{self.dentro.id}/")
+        self.assertEqual(response.status_code, status.HTTP_404_NOT_FOUND)
+
+    def test_criar_com_nome_repetido_ganha_sufixo(self):
+        self.autentica_como(self.mestre_a)
+        url = f"/campanha/{self.campanha_a.id}/pastas/"
+        nomes = [
+            self.client.post(url, {"nome": "Nova pasta", "pasta_pai": self.publica.id}, format="json").data["nome"]
+            for _ in range(3)
+        ]
+        self.assertEqual(nomes, ["Nova pasta", "Nova pasta 2", "Nova pasta 3"])
+
+    def test_nome_repetido_na_raiz_tambem_ganha_sufixo(self):
+        self.autentica_como(self.mestre_a)
+        response = self.client.post(
+            f"/campanha/{self.campanha_a.id}/pastas/", {"nome": "Cidades"}, format="json"
+        )
+        self.assertEqual(response.status_code, status.HTTP_201_CREATED)
+        self.assertEqual(response.data["nome"], "Cidades 2")
+
+    def test_renomear_para_nome_de_irmao_explica_o_conflito(self):
+        self.autentica_como(self.mestre_a)
+        response = self.client.patch(
+            f"/campanha/pastas/{self.segredo.id}/", {"nome": "Cidades"}, format="json"
+        )
+        self.assertEqual(response.status_code, status.HTTP_400_BAD_REQUEST)
+        self.assertIn("Já existe", str(response.data["nome"]))
+
+
+class ArvoreCampanhaTests(DuasCampanhasTestCase):
+
+    def setUp(self):
+        super().setUp()
+        self.oculta = Pasta.objects.create(
+            campanha=self.campanha_a, nome="Segredos", visivel_para_jogadores=False
+        )
+        self.npc_a1.pasta = self.oculta
+        self.npc_a1.save()
+        self.npc_a2.visivel_para_jogadores = False
+        self.npc_a2.save()
+        self.local = Local.objects.create(campanha=self.campanha_a, nome="Porto")
+        self.poder = PoderCampanha.objects.create(campanha=self.campanha_a, nome="Rajada")
+        self.habilidade = HabilidadeCampanha.objects.create(campanha=self.campanha_a, nome="Golpe")
+
+    def _por_chave(self, response):
+        return {(e["tipo"], e["id"]): e for e in response.data["entidades"]}
+
+    def test_mestre_recebe_tudo_em_uma_requisicao(self):
+        self.autentica_como(self.mestre_a)
+        response = self.client.get(f"/campanha/{self.campanha_a.id}/arvore/")
+        self.assertEqual(response.status_code, status.HTTP_200_OK)
+        itens = self._por_chave(response)
+        self.assertIn(("npc", self.npc_a2.id), itens)
+        self.assertEqual(itens[("npc", self.npc_a1.id)]["pasta"], self.oculta.id)
+        self.assertEqual(itens[("local", self.local.id)]["nome"], "Porto")
+        self.assertNotIn(("npc", self.npc_b1.id), itens)
+
+    def test_habilidade_nao_aparece_duas_vezes(self):
+        self.autentica_como(self.mestre_a)
+        itens = self._por_chave(self.client.get(f"/campanha/{self.campanha_a.id}/arvore/"))
+        self.assertIn(("podercampanha", self.poder.id), itens)
+        self.assertIn(("habilidadecampanha", self.habilidade.id), itens)
+        self.assertNotIn(("podercampanha", self.habilidade.id), itens)
+
+    def test_jogador_ve_so_o_visivel_e_sem_a_pasta_oculta(self):
+        self.autentica_como(self.jogador_a)
+        itens = self._por_chave(self.client.get(f"/campanha/{self.campanha_a.id}/arvore/"))
+        self.assertNotIn(("npc", self.npc_a2.id), itens)
+        self.assertIsNone(itens[("npc", self.npc_a1.id)]["pasta"])
+
+    def test_quem_nao_participa_nao_ve(self):
+        self.autentica_como(self.jogador_b)
+        response = self.client.get(f"/campanha/{self.campanha_a.id}/arvore/")
+        self.assertEqual(response.status_code, status.HTTP_403_FORBIDDEN)
+
+
+class ArvoreLoteTests(DuasCampanhasTestCase):
+
+    def setUp(self):
+        super().setUp()
+        self.mundo = Pasta.objects.create(campanha=self.campanha_a, nome="Mundo")
+        self.regioes = Pasta.objects.create(campanha=self.campanha_a, nome="Regiões", pasta_pai=self.mundo)
+        self.url = f"/campanha/{self.campanha_a.id}/arvore/lote/"
+
+    def _post(self, corpo):
+        return self.client.post(self.url, corpo, format="json")
+
+    def test_move_e_reordena_pastas_e_entidades_juntas(self):
+        self.autentica_como(self.mestre_a)
+        response = self._post({"acao": "mover", "itens": [
+            {"tipo": "npc", "id": self.npc_a1.id, "pasta": self.regioes.id, "ordem": 1},
+            {"tipo": "npc", "id": self.npc_a2.id, "pasta": self.regioes.id, "ordem": 0},
+            {"tipo": "pasta", "id": self.regioes.id, "pasta": None, "ordem": 0},
+        ]})
+        self.assertEqual(response.status_code, status.HTTP_200_OK)
+        self.npc_a1.refresh_from_db()
+        self.npc_a2.refresh_from_db()
+        self.regioes.refresh_from_db()
+        self.assertEqual((self.npc_a1.pasta_id, self.npc_a1.ordem), (self.regioes.id, 1))
+        self.assertEqual(self.npc_a2.ordem, 0)
+        self.assertIsNone(self.regioes.pasta_pai_id)
+
+    def test_recusa_ciclo_sem_mudar_nada(self):
+        self.autentica_como(self.mestre_a)
+        response = self._post({"acao": "mover", "itens": [
+            {"tipo": "npc", "id": self.npc_a1.id, "pasta": self.mundo.id},
+            {"tipo": "pasta", "id": self.mundo.id, "pasta": self.regioes.id},
+        ]})
+        self.assertEqual(response.status_code, status.HTTP_400_BAD_REQUEST)
+        self.npc_a1.refresh_from_db()
+        self.assertIsNone(self.npc_a1.pasta_id)
+
+    def test_recusa_nome_repetido_no_destino(self):
+        Pasta.objects.create(campanha=self.campanha_a, nome="Regiões")
+        self.autentica_como(self.mestre_a)
+        response = self._post({"acao": "mover", "itens": [
+            {"tipo": "pasta", "id": self.regioes.id, "pasta": None},
+        ]})
+        self.assertEqual(response.status_code, status.HTTP_400_BAD_REQUEST)
+        self.assertIn("Regiões", response.data["erro"])
+
+    def test_recusa_destino_de_outra_campanha(self):
+        de_b = Pasta.objects.create(campanha=self.campanha_b, nome="De B")
+        self.autentica_como(self.mestre_a)
+        response = self._post({"acao": "mover", "itens": [
+            {"tipo": "npc", "id": self.npc_a1.id, "pasta": de_b.id},
+        ]})
+        self.assertEqual(response.status_code, status.HTTP_400_BAD_REQUEST)
+
+    def test_recusa_item_de_outra_campanha(self):
+        self.autentica_como(self.mestre_a)
+        response = self._post({"acao": "excluir", "itens": [{"tipo": "npc", "id": self.npc_b1.id}]})
+        self.assertEqual(response.status_code, status.HTTP_404_NOT_FOUND)
+        self.assertTrue(NPC.objects.filter(pk=self.npc_b1.id).exists())
+
+    def test_visibilidade_em_lote(self):
+        self.autentica_como(self.mestre_a)
+        response = self._post({"acao": "visibilidade", "visivel": False, "itens": [
+            {"tipo": "pasta", "id": self.mundo.id},
+            {"tipo": "npc", "id": self.npc_a1.id},
+        ]})
+        self.assertEqual(response.status_code, status.HTTP_200_OK)
+        self.mundo.refresh_from_db()
+        self.npc_a1.refresh_from_db()
+        self.assertFalse(self.mundo.visivel_para_jogadores)
+        self.assertFalse(self.npc_a1.visivel_para_jogadores)
+
+    def test_excluir_em_lote_leva_subpastas_e_solta_entidades(self):
+        self.npc_a2.pasta = self.regioes
+        self.npc_a2.save()
+        self.autentica_como(self.mestre_a)
+        response = self._post({"acao": "excluir", "itens": [
+            {"tipo": "pasta", "id": self.mundo.id},
+            {"tipo": "npc", "id": self.npc_a1.id},
+        ]})
+        self.assertEqual(response.status_code, status.HTTP_200_OK)
+        self.assertFalse(Pasta.objects.filter(pk__in=[self.mundo.id, self.regioes.id]).exists())
+        self.assertFalse(NPC.objects.filter(pk=self.npc_a1.id).exists())
+        self.npc_a2.refresh_from_db()
+        self.assertIsNone(self.npc_a2.pasta_id)
+
+    def test_jogador_nao_usa_o_lote(self):
+        self.autentica_como(self.jogador_a)
+        response = self._post({"acao": "excluir", "itens": [{"tipo": "npc", "id": self.npc_a1.id}]})
+        self.assertEqual(response.status_code, status.HTTP_403_FORBIDDEN)
+
+
+# ---------------------------------------------------------------------------
+# Recompensas do Escudo do Mestre
+# ---------------------------------------------------------------------------
+
+class RecompensasTests(DuasCampanhasTestCase):
+
+    def setUp(self):
+        super().setUp()
+        self.arkan = Personagem.objects.create(usuario=self.jogador_a, nome="Arkan", dinheiro="10.00", xp=5)
+        self.lira = Personagem.objects.create(usuario=self.jogador_a, nome="Lira")
+        self.campanha_a.personagens.add(self.arkan, self.lira)
+        self.estranho = Personagem.objects.create(usuario=self.jogador_b, nome="Estranho")
+        self.campanha_b.personagens.add(self.estranho)
+        self.url = f"/campanha/{self.campanha_a.id}/recompensas/"
+
+    def test_soma_ao_que_cada_um_ja_tem(self):
+        self.autentica_como(self.mestre_a)
+        resposta = self.client.post(
+            self.url, {"personagens": [self.arkan.id, self.lira.id], "dinheiro": "2.50", "xp": 100}, format="json"
+        )
+        self.assertEqual(resposta.status_code, status.HTTP_200_OK, resposta.data)
+        self.arkan.refresh_from_db()
+        self.lira.refresh_from_db()
+        self.assertEqual((str(self.arkan.dinheiro), self.arkan.xp), ("12.50", 105))
+        self.assertEqual((str(self.lira.dinheiro), self.lira.xp), ("2.50", 100))
+        self.assertEqual({p["id"]: p["xp"] for p in resposta.data["personagens"]}, {self.arkan.id: 105, self.lira.id: 100})
+
+    def test_so_xp(self):
+        self.autentica_como(self.mestre_a)
+        self.client.post(self.url, {"personagens": [self.lira.id], "xp": 30}, format="json")
+        self.lira.refresh_from_db()
+        self.assertEqual((str(self.lira.dinheiro), self.lira.xp), ("0.00", 30))
+
+    def test_jogador_nao_distribui(self):
+        self.autentica_como(self.jogador_a)
+        resposta = self.client.post(self.url, {"personagens": [self.arkan.id], "xp": 10}, format="json")
+        self.assertEqual(resposta.status_code, status.HTTP_403_FORBIDDEN)
+        self.arkan.refresh_from_db()
+        self.assertEqual(self.arkan.xp, 5)
+
+    def test_personagem_de_fora_recusa_tudo(self):
+        self.autentica_como(self.mestre_a)
+        resposta = self.client.post(
+            self.url, {"personagens": [self.arkan.id, self.estranho.id], "xp": 10}, format="json"
+        )
+        self.assertEqual(resposta.status_code, status.HTTP_400_BAD_REQUEST)
+        self.arkan.refresh_from_db()
+        self.assertEqual(self.arkan.xp, 5)
+
+    def test_recusa_vazio_e_negativo(self):
+        self.autentica_como(self.mestre_a)
+        for corpo in (
+            {"personagens": [], "xp": 1},
+            {"personagens": [self.arkan.id]},
+            {"personagens": [self.arkan.id], "xp": -3},
+            {"personagens": [self.arkan.id], "dinheiro": "abc"},
+        ):
+            resposta = self.client.post(self.url, corpo, format="json")
+            self.assertEqual(resposta.status_code, status.HTTP_400_BAD_REQUEST, corpo)
+
+    def test_estouro_do_limite_nao_entrega_a_ninguem(self):
+        self.lira.dinheiro = "99999999.00"
+        self.lira.save()
+        self.autentica_como(self.mestre_a)
+        resposta = self.client.post(
+            self.url, {"personagens": [self.arkan.id, self.lira.id], "dinheiro": "5.00"}, format="json"
+        )
+        self.assertEqual(resposta.status_code, status.HTTP_400_BAD_REQUEST)
+        self.arkan.refresh_from_db()
+        self.assertEqual(str(self.arkan.dinheiro), "10.00")
+
+    def test_xp_nasce_zerado(self):
+        novo = Personagem.objects.create(usuario=self.jogador_a, nome="Novo")
+        self.assertEqual(novo.xp, 0)

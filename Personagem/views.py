@@ -1642,7 +1642,7 @@ def bonus_lista(request, tipo, object_id):
         bonus = Bonus.objects.filter(
             content_type=content_type,
             object_id=object_id
-        ).order_by("id")
+        ).select_related("origem_fornecido").order_by("id")
 
         serializer = BonusSerializer(bonus, many=True)
 
@@ -1775,6 +1775,79 @@ def bonus_detalhe(request, pk):
             {"mensagem": "Bônus removido com sucesso."},
             status=status.HTTP_204_NO_CONTENT
         )
+
+# ---------------------------------------------------------------------------
+# Bônus FORNECIDOS — os vários bônus nomeados que uma entidade-folha oferece
+# (ver `BonusFornecido`). Endpoint próprio, fora do serializer da entidade:
+# adicionar "+2 DT" a uma Habilidade não reenvia (nem revalida) a Habilidade.
+# ---------------------------------------------------------------------------
+
+def _entidade_fornecedora(request, tipo, object_id):
+    """(entidade, content_type_base) ou uma Response de erro."""
+    tipo = tipo.lower()
+    if calculos.tipo_base(tipo) not in calculos.TIPOS_FORNECEDORES:
+        return None, None, Response(
+            {"erro": "Este tipo de entidade não fornece bônus nomeados."},
+            status=status.HTTP_400_BAD_REQUEST,
+        )
+    modelo = calculos.MODELOS_ALVO[tipo]
+    entidade = modelo.objects.filter(pk=object_id).first()
+    if entidade is None:
+        return None, None, Response({"erro": "Objeto não encontrado."}, status=status.HTTP_404_NOT_FOUND)
+    check_object_permission(request, entidade)
+    return entidade, ContentType.objects.get_for_model(calculos.modelo_base(tipo)), None
+
+
+@extend_schema(methods=["GET"], operation_id="listar_bonus_fornecidos", responses=BonusFornecidoSerializer(many=True))
+@extend_schema(methods=["POST"], operation_id="criar_bonus_fornecido", request=BonusFornecidoSerializer, responses=BonusFornecidoSerializer)
+@api_view(["GET", "POST"])
+@permission_classes([IsAuthenticated])
+def bonus_fornecido_lista(request, tipo, object_id):
+    entidade, content_type, erro = _entidade_fornecedora(request, tipo, object_id)
+    if erro:
+        return erro
+
+    if request.method == "GET":
+        fornecidos = BonusFornecido.objects.filter(content_type=content_type, object_id=entidade.pk)
+        return Response(BonusFornecidoSerializer(fornecidos, many=True).data)
+
+    serializer = BonusFornecidoSerializer(data=request.data)
+    if not serializer.is_valid():
+        return Response(serializer.errors, status=status.HTTP_400_BAD_REQUEST)
+    if "ordem" not in request.data:
+        ultimo = (
+            BonusFornecido.objects.filter(content_type=content_type, object_id=entidade.pk)
+            .order_by("-ordem").values_list("ordem", flat=True).first()
+        )
+        serializer.validated_data["ordem"] = 0 if ultimo is None else ultimo + 1
+    serializer.save(content_type=content_type, object_id=entidade.pk)
+    return Response(serializer.data, status=status.HTTP_201_CREATED)
+
+
+@extend_schema(methods=["PATCH"], operation_id="atualizar_bonus_fornecido", request=BonusFornecidoSerializer, responses=BonusFornecidoSerializer)
+@extend_schema(methods=["DELETE"], operation_id="remover_bonus_fornecido", responses=None)
+@api_view(["PATCH", "DELETE"])
+@permission_classes([IsAuthenticated])
+def bonus_fornecido_detalhe(request, pk):
+    fornecido = BonusFornecido.objects.select_related("content_type").filter(pk=pk).first()
+    entidade = fornecido.entidade if fornecido else None
+    if fornecido is None or entidade is None:
+        return Response({"erro": "Bônus não encontrado."}, status=status.HTTP_404_NOT_FOUND)
+
+    check_object_permission(request, entidade)
+
+    if request.method == "DELETE":
+        fornecido.delete()
+        return Response(status=status.HTTP_204_NO_CONTENT)
+
+    serializer = BonusFornecidoSerializer(fornecido, data=request.data, partial=True)
+    if not serializer.is_valid():
+        return Response(serializer.errors, status=status.HTTP_400_BAD_REQUEST)
+    # O Escudo do Mestre recalcula pelo signal (`Campanha/signals.py`),
+    # como em toda outra gravação da ficha.
+    serializer.save()
+    return Response(serializer.data)
+
 
 @extend_schema(
     methods=["POST"],
@@ -1917,7 +1990,7 @@ def calculos_ficha(request, personagem_id):
             )
 
     dados["bonus"] = BonusSerializer(
-        Bonus.objects.filter(filtro).order_by("id"),
+        Bonus.objects.filter(filtro).select_related("origem_fornecido").order_by("id"),
         many=True, context=ctx
     ).data
 

@@ -34,7 +34,7 @@ from django.contrib.contenttypes.models import ContentType
 
 from Midia.services import public_id_de
 from Personagem import calculos
-from Personagem.models import Atributo, Bonus, Defesa, Personagem, Status
+from Personagem.models import Atributo, Bonus, BonusFornecido, Defesa, Personagem, Status
 
 from . import combate, escudo
 from .models import NPC, Campanha, Combate, Criatura, ParticipanteCombate
@@ -58,6 +58,8 @@ _CAMPOS_BONUS = (
     "tipo_origem",
     "origem_content_type_id",
     "origem_object_id",
+    # Trocar "+4 CA" por "+2 DT" da mesma origem muda o total do alvo.
+    "origem_fornecido_id",
 )
 
 
@@ -443,6 +445,19 @@ def _e_origem_de_algum_bonus(instance):
     ).exists()
 
 
+def _fornecido_salvo(sender, instance, raw=False, **kwargs):
+    """
+    Um bônus NOMEADO (ver `BonusFornecido`) mudou de valor: todo bônus que o
+    usa como origem mudou junto, sem que a linha deles fosse gravada. Mesmo
+    raciocínio — e mesma consulta de corte — de `_origem_de_bonus_salva`.
+    """
+    if raw or not Bonus.objects.filter(origem_fornecido_id=instance.pk).exists():
+        return
+    entidade = instance.entidade
+    if entidade is not None:
+        _agendar_ficha(calculos.personagem_de(entidade))
+
+
 def conectar():
     for model in (Personagem, Status, Atributo, Defesa, Bonus):
         post_init.connect(_ao_carregar, sender=model, dispatch_uid=f"escudo-init-{model._meta.label_lower}")
@@ -462,6 +477,7 @@ def conectar():
         post_save.connect(_origem_de_bonus_salva, sender=modelo, dispatch_uid=f"escudo-origem-save-{uid}")
         post_delete.connect(_origem_de_bonus_salva, sender=modelo, dispatch_uid=f"escudo-origem-delete-{uid}")
 
+    post_save.connect(_fornecido_salvo, sender=BonusFornecido, dispatch_uid="escudo-save-bonus-fornecido")
     post_save.connect(_bonus_salvo, sender=Bonus, dispatch_uid="escudo-save-bonus")
     post_delete.connect(_bonus_excluido, sender=Bonus, dispatch_uid="escudo-delete-bonus")
     post_save.connect(_personagem_salvo, sender=Personagem, dispatch_uid="escudo-save-personagem")

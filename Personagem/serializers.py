@@ -1,5 +1,5 @@
 from django.contrib.contenttypes.models import ContentType
-from django.db import transaction
+from django.db import models, transaction
 from rest_framework import serializers
 from Sistema.serializers import SincronizaSistemasMixin
 from drf_spectacular.utils import extend_schema_field
@@ -136,6 +136,50 @@ class PericiaSerializer(ValorFinalMixin, serializers.ModelSerializer):
         read_only_fields = ("personagem",)
 
 
+class BonusFornecidoSerializer(serializers.ModelSerializer):
+    """Um bônus nomeado que uma entidade oferece (ver `BonusFornecido`)."""
+
+    class Meta:
+        model = BonusFornecido
+        fields = ["id", "nome", "valor", "descricao", "ordem"]
+
+
+class BonusFornecidosMixin(serializers.Serializer):
+    """
+    Publica `bonus_fornecidos` em Item/Arma/Armadura, Técnica, Poder,
+    Habilidade e Aprimoramento — somente leitura: quem cria/edita/remove é o
+    endpoint próprio (`/personagem/<tipo>/<id>/bonus-fornecidos/`), para
+    adicionar um bônus não reenviar a entidade inteira.
+
+    Vir junto da linha é o que deixa o seletor de origem de um bônus mostrar
+    "Postura Defensiva → +4 CA" sem uma requisição por entidade: a ficha já
+    tem as listagens em cache.
+
+    Numa listagem, a PRIMEIRA linha carrega os bônus de todas as outras numa
+    consulta (a raiz da serialização guarda o resultado); uma linha avulsa,
+    ou uma que não estava na listagem, busca só os seus.
+
+    Herda de `serializers.Serializer` pelo mesmo motivo de `ValorFinalMixin`.
+    """
+
+    bonus_fornecidos = serializers.SerializerMethodField()
+
+    @extend_schema_field(BonusFornecidoSerializer(many=True))
+    def get_bonus_fornecidos(self, obj):
+        raiz = self.root
+        cache = getattr(raiz, "_bonus_fornecidos", None)
+        if cache is None:
+            instancias = raiz.instance
+            if instancias is None or isinstance(instancias, models.Model):
+                instancias = [obj]
+            cache = calculos.fornecidos_por_entidade(list(instancias))
+            raiz._bonus_fornecidos = cache
+        chave = calculos.chave_de(obj)
+        if chave not in cache:
+            cache.update(calculos.fornecidos_por_entidade([obj]))
+        return BonusFornecidoSerializer(cache.get(chave, []), many=True).data
+
+
 class SincronizaVendasMixin:
     """
     Faz `Item.vendas` valer de verdade: marcado, o item é anunciado no
@@ -184,7 +228,7 @@ class SincronizaVendasMixin:
         )
 
 
-class ItemSerializer(SincronizaVendasMixin, CloudinaryUrlSerializerMixin, serializers.ModelSerializer):
+class ItemSerializer(SincronizaVendasMixin, CloudinaryUrlSerializerMixin, BonusFornecidosMixin, serializers.ModelSerializer):
 
     media_fields = ["foto"]
 
@@ -194,7 +238,7 @@ class ItemSerializer(SincronizaVendasMixin, CloudinaryUrlSerializerMixin, serial
         read_only_fields = ("personagem",)
 
 
-class ArmaSerializer(SincronizaVendasMixin, CloudinaryUrlSerializerMixin, serializers.ModelSerializer):
+class ArmaSerializer(SincronizaVendasMixin, CloudinaryUrlSerializerMixin, BonusFornecidosMixin, serializers.ModelSerializer):
 
     media_fields = ["foto"]
 
@@ -204,7 +248,7 @@ class ArmaSerializer(SincronizaVendasMixin, CloudinaryUrlSerializerMixin, serial
         read_only_fields = ("personagem",)
 
 
-class ArmaduraSerializer(SincronizaVendasMixin, CloudinaryUrlSerializerMixin, serializers.ModelSerializer):
+class ArmaduraSerializer(SincronizaVendasMixin, CloudinaryUrlSerializerMixin, BonusFornecidosMixin, serializers.ModelSerializer):
 
     media_fields = ["foto"]
 
@@ -218,7 +262,7 @@ class ArmaduraSerializer(SincronizaVendasMixin, CloudinaryUrlSerializerMixin, se
         read_only_fields = ("personagem", "valor_final")
 
 
-class TecnicaSerializer(CloudinaryUrlSerializerMixin, serializers.ModelSerializer):
+class TecnicaSerializer(CloudinaryUrlSerializerMixin, BonusFornecidosMixin, serializers.ModelSerializer):
 
     media_fields = ["midia"]
 
@@ -228,7 +272,7 @@ class TecnicaSerializer(CloudinaryUrlSerializerMixin, serializers.ModelSerialize
         read_only_fields = ("personagem",)
 
 
-class PoderSerializer(CloudinaryUrlSerializerMixin, serializers.ModelSerializer):
+class PoderSerializer(CloudinaryUrlSerializerMixin, BonusFornecidosMixin, serializers.ModelSerializer):
 
     media_fields = ["midia"]
 
@@ -249,9 +293,39 @@ class PoderUsuarioSerializer(CloudinaryUrlSerializerMixin, serializers.ModelSeri
         read_only_fields = ("usuario", "criado_em", "atualizado_em")
 
 
-class HabilidadeSerializer(CloudinaryUrlSerializerMixin, serializers.ModelSerializer):
+class HabilidadeSerializer(CloudinaryUrlSerializerMixin, BonusFornecidosMixin, serializers.ModelSerializer):
 
     media_fields = ["midia"]
+
+    # Os Aprimoramentos também podem ser ORIGEM de bônus, mas moram dentro da
+    # Habilidade e só são listados por ela. Este resumo (nome, total e bônus
+    # nomeados) é o que o seletor de origem precisa para oferecê-los sem uma
+    # requisição por Habilidade.
+    aprimoramentos_resumo = serializers.SerializerMethodField()
+
+    @extend_schema_field(serializers.ListField(child=serializers.DictField()))
+    def get_aprimoramentos_resumo(self, obj):
+        raiz = self.root
+        cache = getattr(raiz, "_aprimoramentos", None)
+        if cache is None:
+            instancias = raiz.instance
+            if instancias is None or isinstance(instancias, models.Model):
+                instancias = [obj]
+            ids = [h.pk for h in instancias]
+            aprimoramentos = list(Aprimoramento.objects.filter(habilidade_id__in=ids).order_by("ordem", "id"))
+            fornecidos = calculos.fornecidos_por_entidade(aprimoramentos)
+            cache = {}
+            for a in aprimoramentos:
+                cache.setdefault(a.habilidade_id, []).append({
+                    "id": a.pk,
+                    "nome": a.nome,
+                    "valor_final": a.valor_final,
+                    "bonus_fornecidos": BonusFornecidoSerializer(
+                        fornecidos.get(calculos.chave_de(a), []), many=True
+                    ).data,
+                })
+            raiz._aprimoramentos = cache
+        return cache.get(obj.pk, [])
 
     class Meta:
         model = Habilidade
@@ -259,7 +333,7 @@ class HabilidadeSerializer(CloudinaryUrlSerializerMixin, serializers.ModelSerial
         read_only_fields = ("personagem",)
 
 
-class AprimoramentoSerializer(serializers.ModelSerializer):
+class AprimoramentoSerializer(BonusFornecidosMixin, serializers.ModelSerializer):
 
     class Meta:
         model = Aprimoramento
@@ -293,6 +367,10 @@ class BonusSerializer(serializers.ModelSerializer):
     )
     origem_id = serializers.IntegerField(required=False, allow_null=True)
     origem_nome = serializers.SerializerMethodField(read_only=True)
+    # Qual dos bônus NOMEADOS da origem (ver `BonusFornecido`). Vazio = o
+    # `valor_final` da origem ("Valor total"), como antes.
+    origem_fornecido = serializers.IntegerField(source="origem_fornecido_id", required=False, allow_null=True)
+    origem_fornecido_nome = serializers.SerializerMethodField(read_only=True)
     valor_efetivo = serializers.SerializerMethodField(read_only=True)
 
     class Meta:
@@ -311,6 +389,8 @@ class BonusSerializer(serializers.ModelSerializer):
             "origem_tipo",
             "origem_id",
             "origem_nome",
+            "origem_fornecido",
+            "origem_fornecido_nome",
             "valor_efetivo",
             "expira_em",
             "versao",
@@ -331,6 +411,7 @@ class BonusSerializer(serializers.ModelSerializer):
             "tipo",
             "alvo_nome",
             "origem_nome",
+            "origem_fornecido_nome",
             "valor_efetivo",
             # Quem mexe no prazo é o endpoint "usar" (1 hora) ou o próprio
             # jogador ligando/desligando o bônus — nunca um PATCH solto, que
@@ -361,6 +442,13 @@ class BonusSerializer(serializers.ModelSerializer):
         if obj.tipo_origem != Bonus.TIPO_ENTIDADE or obj.origem is None:
             return None
         return getattr(obj.origem, "nome", str(obj.origem))
+
+    @extend_schema_field(serializers.CharField(allow_null=True))
+    def get_origem_fornecido_nome(self, obj):
+        """Rótulo do bônus nomeado escolhido ("CA"), para "Postura Defensiva → +4 CA"."""
+        if obj.tipo_origem != Bonus.TIPO_ENTIDADE or obj.origem_fornecido_id is None:
+            return None
+        return obj.origem_fornecido.nome if obj.origem_fornecido else None
 
     @extend_schema_field(serializers.IntegerField())
     def get_valor_efetivo(self, obj):
@@ -415,6 +503,15 @@ class BonusSerializer(serializers.ModelSerializer):
 
         origem_tipo = attrs.pop("origem_tipo", serializers.empty)
         origem_id = attrs.pop("origem_id", serializers.empty)
+        fornecido_id = attrs.pop("origem_fornecido_id", serializers.empty)
+
+        # Trocar de origem sem dizer qual bônus dela esquece a escolha
+        # anterior (ela era de OUTRA entidade); não mexer na origem a mantém.
+        origem_mudou = origem_tipo is not serializers.empty or origem_id is not serializers.empty
+        if fornecido_id is serializers.empty:
+            fornecido_id = (
+                instancia.origem_fornecido_id if instancia is not None and not origem_mudou else None
+            )
 
         if origem_tipo is serializers.empty and instancia is not None:
             origem_tipo = (
@@ -433,6 +530,7 @@ class BonusSerializer(serializers.ModelSerializer):
             # origem pendurada confundiria a limpeza e o grafo de ciclos.
             attrs["origem_content_type"] = None
             attrs["origem_object_id"] = None
+            attrs["origem_fornecido"] = None
             return attrs
 
         if not origem_tipo or origem_id is None:
@@ -481,8 +579,23 @@ class BonusSerializer(serializers.ModelSerializer):
         # `modelo` já é o model BASE da cadeia de herança (foi assim que
         # buscamos a origem), então a referência nasce normalizada — uma arma
         # é gravada como `item`, uma habilidade como `poder`.
-        attrs["origem_content_type"] = ContentType.objects.get_for_model(modelo)
+        content_type_origem = ContentType.objects.get_for_model(modelo)
+        attrs["origem_content_type"] = content_type_origem
         attrs["origem_object_id"] = origem.pk
+
+        # O bônus nomeado escolhido precisa ser DESTA origem — sem isto daria
+        # para ler o número de um bônus de outra entidade (ou de outra ficha)
+        # só trocando o id.
+        attrs["origem_fornecido"] = None
+        if fornecido_id is not None:
+            fornecido = BonusFornecido.objects.filter(
+                pk=fornecido_id, content_type=content_type_origem, object_id=origem.pk
+            ).first()
+            if fornecido is None:
+                raise serializers.ValidationError(
+                    {"origem_fornecido": ["Esse bônus não pertence à entidade de origem escolhida."]}
+                )
+            attrs["origem_fornecido"] = fornecido
         return attrs
 
     def _alvo(self, attrs):

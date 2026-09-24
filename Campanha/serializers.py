@@ -722,6 +722,29 @@ class PastaSerializer(serializers.ModelSerializer):
 
         return pasta_pai
 
+    def validate(self, attrs):
+        attrs = super().validate(attrs)
+
+        # A UniqueConstraint (campanha, pasta_pai, nome) não pega duas pastas
+        # com o mesmo nome na RAIZ (o banco trata NULL como sempre
+        # diferente), e quando pega, pega tarde: vira IntegrityError. Checar
+        # aqui dá a mesma regra nos dois níveis e uma mensagem que a UI pode
+        # mostrar como está.
+        campanha = self.instance.campanha if self.instance else self.context.get("campanha")
+        nome = attrs.get("nome", getattr(self.instance, "nome", None))
+        pai = attrs["pasta_pai"] if "pasta_pai" in attrs else getattr(self.instance, "pasta_pai", None)
+
+        if campanha is not None and nome:
+            conflito = Pasta.objects.filter(campanha=campanha, pasta_pai=pai, nome=nome)
+            if self.instance is not None:
+                conflito = conflito.exclude(pk=self.instance.pk)
+            if conflito.exists():
+                raise serializers.ValidationError(
+                    {"nome": f'Já existe uma pasta chamada "{nome}" neste lugar.'}
+                )
+
+        return attrs
+
 
 # ---------------------------------------------------------------------------
 # TipoConexao
