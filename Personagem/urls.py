@@ -63,6 +63,8 @@ urlpatterns = [
     #BONUS
     path("<str:tipo>/<int:object_id>/bonus/", views.bonus_lista, name="bonus_lista"),
     path("bonus/<int:pk>/", views.bonus_detalhe, name="bonus_detalhe"),
+    path("<str:tipo>/<int:object_id>/bonus-fornecidos/", views.bonus_fornecido_lista, name="bonus_fornecido_lista"),
+    path("bonus-fornecidos/<int:pk>/", views.bonus_fornecido_detalhe, name="bonus_fornecido_detalhe"),
 
     # "USAR" (liga os bônus da entidade por 1 hora) — Técnica, Poder,
     # Habilidade e Aprimoramento. O desconto do custo no Status continua

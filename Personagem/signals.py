@@ -25,7 +25,7 @@ from django.db.models.signals import post_delete, pre_delete
 from django.dispatch import receiver
 
 from . import calculos
-from .models import Bonus
+from .models import Bonus, BonusFornecido
 
 # Só os models BASE: uma `Arma` excluída dispara o sinal de `Item` também
 # (herança multi-tabela), e as referências são sempre gravadas sob a base.
@@ -54,7 +54,9 @@ def _congelar_valor_da_origem(sender, instance, **kwargs):
         return
 
     contexto = calculos.ContextoCalculo()
-    instance._bonus_dependentes = [(b.pk, contexto.valor_final(instance)) for b in dependentes]
+    # `valor_bonus`, e não o `valor_final` da origem: um bônus que apontava
+    # para "+4 CA" da Postura Defensiva congela em 4, não no total dela.
+    instance._bonus_dependentes = [(b.pk, contexto.valor_bonus(b)) for b in dependentes]
 
 
 @receiver(post_delete)
@@ -62,7 +64,35 @@ def _origem_removida(sender, instance, **kwargs):
     if sender not in _MODELOS_ORIGEM:
         return
 
-    congelados = getattr(instance, "_bonus_dependentes", None)
+    # Os bônus nomeados que a entidade oferecia vão embora com ela
+    # (GenericForeignKey não tem cascata). Depois de congelar os dependentes.
+    _apagar_fornecidos_de(instance)
+
+    _congelar_como_manual(getattr(instance, "_bonus_dependentes", None))
+
+
+def _apagar_fornecidos_de(instance):
+    content_type = ContentType.objects.get_for_model(
+        calculos.modelo_base(instance._meta.model_name)
+    )
+    BonusFornecido.objects.filter(content_type=content_type, object_id=instance.pk).delete()
+
+
+@receiver(pre_delete, sender=BonusFornecido)
+def _congelar_valor_do_fornecido(sender, instance, **kwargs):
+    """Mesma regra da entidade apagada, para um bônus nomeado apagado sozinho."""
+    instance._bonus_dependentes = [
+        (pk, instance.valor)
+        for pk in Bonus.objects.filter(origem_fornecido=instance).values_list("pk", flat=True)
+    ]
+
+
+@receiver(post_delete, sender=BonusFornecido)
+def _fornecido_removido(sender, instance, **kwargs):
+    _congelar_como_manual(getattr(instance, "_bonus_dependentes", None))
+
+
+def _congelar_como_manual(congelados):
     if not congelados:
         return
 
@@ -75,5 +105,6 @@ def _origem_removida(sender, instance, **kwargs):
             tipo_origem=Bonus.TIPO_MANUAL,
             origem_content_type=None,
             origem_object_id=None,
+            origem_fornecido=None,
             valor=valor,
         )

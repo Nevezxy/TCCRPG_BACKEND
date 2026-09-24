@@ -337,6 +337,49 @@ class Aprimoramento(models.Model):
         """
         return self.habilidade.personagem
     
+class BonusFornecido(models.Model):
+    """
+    Um bônus que uma entidade-FOLHA da ficha (Item/Arma/Armadura, Técnica,
+    Poder/Habilidade, Aprimoramento) oferece a quem a usar como origem.
+
+    Antes cada uma dessas entidades fornecia um número só — a coluna
+    `valor_final` ("Bônus fornecido"). Isso não dava conta de uma Habilidade
+    como "Postura Defensiva", que concede +4 de CA E +2 de DT: o jogador tinha
+    de escolher um dos dois. Agora ela guarda uma linha por bônus, cada uma
+    com o próprio rótulo e valor, e um `Bonus` por entidade aponta para a
+    linha exata que escolheu (`Bonus.origem_fornecido`).
+
+    `valor_final` continua existindo e valendo — é o "Valor total" que os
+    bônus já gravados usam, e o que a Armadura espelha de `defesa`. Nada que
+    existia muda de número.
+
+    Genérico (content_type/object_id), como o próprio `Bonus`, e gravado
+    sempre sob o model BASE da herança (`item`, `poder`) — ver
+    `calculos.tipo_base`: uma arma tem o mesmo conjunto de bônus fornecidos
+    na aba Inventário e na aba Combate.
+
+    Quem apaga as linhas quando a entidade é excluída é
+    `Personagem/signals.py` (GenericForeignKey não tem `on_delete`).
+    """
+
+    content_type = models.ForeignKey(ContentType, on_delete=models.CASCADE)
+    object_id = models.PositiveIntegerField()
+    entidade = GenericForeignKey("content_type", "object_id")
+    # O que o bônus representa ("CA", "DT", "Defesa Física") — é o rótulo
+    # que aparece ao escolhê-lo como origem: "Postura Defensiva → +4 CA".
+    nome = models.CharField(max_length=100)
+    valor = models.IntegerField(default=0)
+    descricao = models.CharField(max_length=255, blank=True, default="")
+    ordem = models.PositiveIntegerField(default=0)
+
+    class Meta:
+        ordering = ["ordem", "id"]
+        indexes = [models.Index(fields=["content_type", "object_id"])]
+
+    def __str__(self):
+        return f"{self.nome} ({self.valor:+d})"
+
+
 class Bonus(Versionado):
     """
     Modificador anexado a qualquer entidade da ficha (Status, Atributo,
@@ -394,6 +437,21 @@ class Bonus(Versionado):
     )
     origem_object_id = models.PositiveIntegerField(blank=True, null=True)
     origem = GenericForeignKey("origem_content_type", "origem_object_id")
+
+    # QUAL dos bônus da origem foi escolhido, quando ela oferece vários (ver
+    # `BonusFornecido`). Vazio = o `valor_final` da origem, que é como todo
+    # bônus por entidade funcionava antes — e continua funcionando.
+    #
+    # `SET_NULL` só por segurança: o signal de `BonusFornecido` transforma
+    # antes o bônus em manual com o último valor, do mesmo jeito que faz
+    # quando a entidade de origem inteira é apagada.
+    origem_fornecido = models.ForeignKey(
+        BonusFornecido,
+        on_delete=models.SET_NULL,
+        related_name="referencias",
+        blank=True,
+        null=True,
+    )
 
     expira_em = models.DateTimeField(blank=True, null=True, default=None)
 
