@@ -620,6 +620,19 @@ urlpatterns = [
         name="duplicar_pasta"
     ),
 
+    # Árvore da aba Mundo: carga leve de todas as entidades e ações em lote
+    path(
+        "<int:pk>/arvore/",
+        views.arvore_campanha,
+        name="arvore_campanha"
+    ),
+
+    path(
+        "<int:pk>/arvore/lote/",
+        views.arvore_lote,
+        name="arvore_lote"
+    ),
+
 
     # Tipos de conexão — vocabulário compartilhado (não aninhado em
     # campanha; ver TipoConexao em models.py)
