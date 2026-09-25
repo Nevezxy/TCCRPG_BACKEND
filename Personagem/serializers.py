@@ -1,3 +1,5 @@
+import re
+
 from django.contrib.contenttypes.models import ContentType
 from django.db import models, transaction
 from rest_framework import serializers
@@ -75,9 +77,23 @@ class ValorFinalMixin(serializers.Serializer):
         return self.contexto_calculo().incompleto(obj)
 
 
+# Chaves aceitas em `Personagem.tema`. Espelham `ThemeColors` e
+# `AparenciaFicha` do frontend (`src/context/ThemeContext.tsx`): o JSON é
+# livre no banco, então é AQUI que um cliente fica impedido de gravar lixo —
+# que depois viraria `--<chave>` no CSS de quem abrir a ficha.
+TEMA_CORES = (
+    "primary", "secondary", "terciary", "quartiary", "bg-dark", "bg-card",
+    "bg-secondary", "text-primary", "text-secondary", "border-color",
+)
+# (mínimo, máximo) de cada controle; fora da faixa é recusado, não ajustado,
+# para um cliente com bug aparecer em vez de gravar um valor que ninguém pediu.
+TEMA_APARENCIA = {"opacidadeCards": (20, 100), "desfoque": (0, 20), "veu": (0, 90)}
+_COR_HEX = re.compile(r"^#[0-9a-fA-F]{6}$")
+
+
 class PersonagemSerializer(SincronizaSistemasMixin, CloudinaryUrlSerializerMixin, serializers.ModelSerializer):
 
-    media_fields = ["foto", "banner"]
+    media_fields = ["foto", "banner", "fundo"]
 
     # Ids das campanhas das quais este personagem participa (M2M reverso de
     # `Campanha.personagens`). Só leitura: quem entra/sai de uma campanha é
@@ -91,6 +107,38 @@ class PersonagemSerializer(SincronizaSistemasMixin, CloudinaryUrlSerializerMixin
         model = Personagem
         fields = "__all__"
         read_only_fields = ("usuario",)
+
+    def validate_tema(self, valor):
+        if not isinstance(valor, dict):
+            raise serializers.ValidationError("Envie um objeto com `cores` e/ou `aparencia`.")
+        sobrando = set(valor) - {"cores", "aparencia"}
+        if sobrando:
+            raise serializers.ValidationError(f"Chaves desconhecidas: {', '.join(sorted(sobrando))}.")
+
+        cores = valor.get("cores", {})
+        if not isinstance(cores, dict):
+            raise serializers.ValidationError("`cores` deve ser um objeto.")
+        for chave, cor in cores.items():
+            if chave not in TEMA_CORES:
+                raise serializers.ValidationError(f"Cor desconhecida: {chave}.")
+            if not isinstance(cor, str) or not _COR_HEX.match(cor):
+                raise serializers.ValidationError(f"`{chave}` deve ser uma cor no formato #rrggbb.")
+
+        aparencia = valor.get("aparencia", {})
+        if not isinstance(aparencia, dict):
+            raise serializers.ValidationError("`aparencia` deve ser um objeto.")
+        for chave, numero in aparencia.items():
+            if chave not in TEMA_APARENCIA:
+                raise serializers.ValidationError(f"Ajuste desconhecido: {chave}.")
+            minimo, maximo = TEMA_APARENCIA[chave]
+            # `bool` é subclasse de `int` em Python: sem a exclusão, `true`
+            # passaria como 1.
+            if isinstance(numero, bool) or not isinstance(numero, (int, float)) or not minimo <= numero <= maximo:
+                raise serializers.ValidationError(f"`{chave}` deve ser um número entre {minimo} e {maximo}.")
+
+        # `{}` continua `{}` ("nunca personalizado"); o resto sai só com as
+        # duas chaves conhecidas.
+        return {k: v for k, v in (("cores", cores), ("aparencia", aparencia)) if k in valor}
 
 
 class StatusSerializer(ValorFinalMixin, serializers.ModelSerializer):

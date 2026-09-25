@@ -168,6 +168,19 @@ class SubstituicaoTests(BaseMidia):
         self.assertEqual(resposta.status_code, 200, resposta.data)
         self.assertEqual(self.delete.call_args.args[0], ["tccrpg/arma-antiga"])
 
+    def test_fundo_da_ficha_usa_o_mesmo_pipeline(self):
+        # `Personagem.fundo` não tem código próprio: estar em `media_fields`
+        # tem de bastar para o upload e a limpeza do arquivo antigo.
+        dono = Personagem.objects.create(usuario=self.mestre, nome="Herói", fundo="image/upload/v1/tccrpg/fundo-antigo.jpg")
+        self.upload.return_value = recurso("tccrpg/personagem/personagem/fundo/novo")
+
+        with self.captureOnCommitCallbacks(execute=True):
+            resposta = self.client.patch(f"/personagem/{dono.id}/", {"fundo": arquivo()}, format="multipart")
+
+        self.assertEqual(resposta.status_code, 200, resposta.data)
+        self.assertIn("fundo/novo", resposta.data["fundo"])
+        self.assertEqual(self.delete.call_args.args[0], ["tccrpg/fundo-antigo"])
+
 
 class RemocaoEExclusaoTests(BaseMidia):
     def test_remover_imagem_com_null(self):

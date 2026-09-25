@@ -48,6 +48,17 @@ class Personagem(Versionado):
     usuario = models.ForeignKey(settings.AUTH_USER_MODEL, on_delete=models.CASCADE, related_name='personagens')
     foto = CloudinaryField('Foto', blank=True)
     banner = CloudinaryField('Banner', blank=True)
+    # Foto de fundo da ficha compacta. Passa pelo mesmo pipeline de `foto` e
+    # `banner` (upload seguro, fila de exclusão do Cloudinary na troca) só por
+    # estar em `PersonagemSerializer.media_fields`.
+    fundo = CloudinaryField('Fundo', blank=True)
+    # Aparência da ficha: `{"cores": {...}, "aparencia": {...}}` — a paleta do
+    # personagem e a opacidade/desfoque dos cards sobre o `fundo`. Antes
+    # vivia no localStorage de cada aparelho; aqui vale em qualquer um. O
+    # formato é validado em `PersonagemSerializer.validate_tema`. `{}` = nunca
+    # personalizado (o frontend usa o tema padrão). `db_default` pelo mesmo
+    # motivo de `peso_multiplica_quantidade`.
+    tema = models.JSONField(default=dict, db_default={}, blank=True)
     nome = models.CharField(max_length=100, db_index=True)
     nivel = models.PositiveIntegerField(default=1)
     idade = models.CharField(max_length=10, blank=True, null=True)

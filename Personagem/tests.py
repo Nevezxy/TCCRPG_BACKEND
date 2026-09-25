@@ -357,3 +357,70 @@ class ItemArmaArmaduraCompartilhamTests(DoisUsuariosTestCase):
 
         self.assertEqual(response.status_code, status.HTTP_204_NO_CONTENT)
         self.assertNotIn(self.armadura.pk, self.ids("armadura"))
+
+
+class TemaPersonagemTests(DoisUsuariosTestCase):
+    """
+    `Personagem.tema` — paleta e aparência da ficha, antes no localStorage de
+    cada aparelho. JSON livre no banco, validado no serializer: é o que vira
+    CSS na tela de quem abrir a ficha.
+    """
+
+    def setUp(self):
+        super().setUp()
+        self.url = f"/personagem/{self.personagem.pk}/"
+        self.autentica_como(self.alice)
+
+    def patch(self, tema):
+        return self.client.patch(self.url, {"tema": tema}, format="json")
+
+    def test_ficha_nova_comeca_sem_tema(self):
+        response = self.client.get(self.url)
+
+        self.assertEqual(response.status_code, status.HTTP_200_OK)
+        self.assertEqual(response.data["tema"], {})
+        self.assertIsNone(response.data["fundo"])
+
+    def test_patch_grava_cores_e_aparencia(self):
+        tema = {"cores": {"primary": "#ff0066", "bg-card": "#101010"}, "aparencia": {"opacidadeCards": 60, "desfoque": 8.5}}
+
+        response = self.patch(tema)
+
+        self.assertEqual(response.status_code, status.HTTP_200_OK, response.data)
+        self.personagem.refresh_from_db()
+        self.assertEqual(self.personagem.tema, tema)
+
+    def test_objeto_vazio_volta_ao_padrao(self):
+        self.patch({"cores": {"primary": "#ff0066"}})
+
+        response = self.patch({})
+
+        self.assertEqual(response.status_code, status.HTTP_200_OK, response.data)
+        self.personagem.refresh_from_db()
+        self.assertEqual(self.personagem.tema, {})
+
+    def test_recusa_o_que_viraria_css_invalido(self):
+        invalidos = [
+            "azul",
+            {"fonte": "Comic Sans"},
+            {"cores": {"primary": "red; background: url(x)"}},
+            {"cores": {"--qualquer": "#000000"}},
+            {"aparencia": {"opacidadeCards": 5}},
+            {"aparencia": {"desfoque": True}},
+            {"aparencia": {"zoom": 2}},
+        ]
+        for tema in invalidos:
+            with self.subTest(tema=tema):
+                response = self.patch(tema)
+                self.assertEqual(response.status_code, status.HTTP_400_BAD_REQUEST)
+        self.personagem.refresh_from_db()
+        self.assertEqual(self.personagem.tema, {})
+
+    def test_outro_usuario_nao_altera_o_tema(self):
+        self.autentica_como(self.bob)
+
+        response = self.patch({"cores": {"primary": "#000000"}})
+
+        self.assertIn(response.status_code, (status.HTTP_403_FORBIDDEN, status.HTTP_404_NOT_FOUND))
+        self.personagem.refresh_from_db()
+        self.assertEqual(self.personagem.tema, {})
